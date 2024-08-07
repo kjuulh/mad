@@ -134,6 +134,10 @@ impl Mad {
                     }
                     res = comp.run(job_cancellation) => {
                         error_tx.send(res).await
+
+                    }
+                    _ = tokio::signal::ctrl_c() => {
+                        error_tx.send(Ok(())).await
                     }
                 }
             });
