@@ -5,5 +5,14 @@ edition = "2021"
 
 [dependencies]
 anyhow.workspace = true
+async-trait = "0.1.81"
+futures = "0.3.30"
+futures-util = "0.3.30"
+rand = "0.8.5"
+thiserror = "1.0.63"
 tokio.workspace = true
+tokio-util = "0.7.11"
 tracing.workspace = true
+
+[dev-dependencies]
+tracing-test = { version = "0.2.5", features = ["no-env-filter"] }
