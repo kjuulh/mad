@@ -1,4 +1,3 @@
-use anyhow::anyhow;
 use async_trait::async_trait;
 use mad::{Component, Mad};
 use rand::Rng;
@@ -17,8 +16,6 @@ impl Component for NeverEndingRun {
         let millis_wait = rand::thread_rng().gen_range(50..1000);
 
         tokio::time::sleep(std::time::Duration::from_millis(millis_wait)).await;
-
-        return Err(mad::MadError::Inner(anyhow!("failed to run stuff")));
 
         Ok(())
     }
@@ -86,8 +83,6 @@ async fn test_can_run_components() -> anyhow::Result<()> {
         .add(NeverEndingRun {})
         .run()
         .await?;
-
-    anyhow::bail!("stuff");
 
     Ok(())
 }
