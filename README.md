@@ -41,3 +41,11 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+## Examples
+
+Can be found (here)[crates/mad/examples]
+
+- basic
+- fn
+- signals
+- error_log
