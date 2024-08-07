@@ -94,7 +94,7 @@ impl Mad {
 
         let close_result = self.close_components().await;
 
-        tracing::info!("mad is closing down");
+        tracing::info!("mad is closed down");
         match (run_result, close_result) {
             (Err(run), Err(close)) => {
                 return Err(MadError::AggregateError(AggregateError {
