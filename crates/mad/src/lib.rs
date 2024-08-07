@@ -49,6 +49,11 @@ pub struct Mad {
     should_cancel: Option<std::time::Duration>,
 }
 
+struct CompletionResult {
+    res: Result<(), MadError>,
+    name: Option<String>,
+}
+
 impl Mad {
     pub fn builder() -> Self {
         Self {
@@ -62,6 +67,16 @@ impl Mad {
         self.components.push(component.into_component());
 
         self
+    }
+
+    pub fn add_fn<F, Fut>(&mut self, f: F) -> &mut Self
+    where
+        F: Fn(CancellationToken) -> Fut + Send + Sync + 'static,
+        Fut: futures::Future<Output = Result<(), MadError>> + Send + 'static,
+    {
+        let comp = ClosureComponent { inner: Box::new(f) };
+
+        self.add(comp)
     }
 
     pub fn cancellation(&mut self, should_cancel: Option<std::time::Duration>) -> &mut Self {
@@ -122,22 +137,23 @@ impl Mad {
             let cancellation_token = cancellation_token.child_token();
             let job_cancellation = job_cancellation.child_token();
 
-            let (error_tx, error_rx) = tokio::sync::mpsc::channel::<Result<(), MadError>>(1);
+            let (error_tx, error_rx) = tokio::sync::mpsc::channel::<CompletionResult>(1);
             channels.push(error_rx);
 
             tokio::spawn(async move {
-                tracing::debug!(component = &comp.name(), "mad running");
+                let name = comp.name().clone();
+
+                tracing::debug!(component = name, "mad running");
 
                 tokio::select! {
                     _ = cancellation_token.cancelled() => {
-                        error_tx.send(Ok(())).await
+                        error_tx.send(CompletionResult { res: Ok(()) , name  }).await
                     }
                     res = comp.run(job_cancellation) => {
-                        error_tx.send(res).await
-
+                        error_tx.send(CompletionResult { res , name  }).await
                     }
                     _ = tokio::signal::ctrl_c() => {
-                        error_tx.send(Ok(())).await
+                        error_tx.send(CompletionResult { res: Ok(()) , name }).await
                     }
                 }
             });
@@ -149,17 +165,24 @@ impl Mad {
         }
 
         while let Some(Some(msg)) = futures.next().await {
-            tracing::trace!("received end signal from a component");
-
-            if let Err(e) = msg {
-                tracing::debug!(error = e.to_string(), "stopping running components");
-                job_cancellation.cancel();
-
-                if let Some(cancel_wait) = self.should_cancel {
-                    tokio::time::sleep(cancel_wait).await;
-
-                    cancellation_token.cancel();
+            match msg.res {
+                Err(e) => {
+                    tracing::debug!(
+                        error = e.to_string(),
+                        component = msg.name,
+                        "component ran to completion with error"
+                    );
                 }
+                Ok(_) => {
+                    tracing::debug!(component = msg.name, "component ran to completion");
+                }
+            }
+
+            job_cancellation.cancel();
+            if let Some(cancel_wait) = self.should_cancel {
+                tokio::time::sleep(cancel_wait).await;
+
+                cancellation_token.cancel();
             }
         }
 
@@ -209,5 +232,36 @@ pub trait IntoComponent {
 impl<T: Component + Send + Sync + 'static> IntoComponent for T {
     fn into_component(self) -> Arc<dyn Component + Send + Sync + 'static> {
         Arc::new(self)
+    }
+}
+
+struct ClosureComponent<F, Fut>
+where
+    F: Fn(CancellationToken) -> Fut + Send + Sync + 'static,
+    Fut: futures::Future<Output = Result<(), MadError>> + Send + 'static,
+{
+    inner: Box<F>,
+}
+
+impl<F, Fut> ClosureComponent<F, Fut>
+where
+    F: Fn(CancellationToken) -> Fut + Send + Sync + 'static,
+    Fut: futures::Future<Output = Result<(), MadError>> + Send + 'static,
+{
+    pub async fn execute(&self, cancellation_token: CancellationToken) -> Result<(), MadError> {
+        (*self.inner)(cancellation_token).await?;
+
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl<F, Fut> Component for ClosureComponent<F, Fut>
+where
+    F: Fn(CancellationToken) -> Fut + Send + Sync + 'static,
+    Fut: futures::Future<Output = Result<(), MadError>> + Send + 'static,
+{
+    async fn run(&self, cancellation_token: CancellationToken) -> Result<(), MadError> {
+        self.execute(cancellation_token).await
     }
 }
