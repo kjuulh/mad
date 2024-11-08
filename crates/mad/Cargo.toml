@@ -4,6 +4,7 @@ version.workspace = true
 description = "notmad is a life-cycle manager for long running rust operations"
 license = "MIT"
 repository = "https://github.com/kjuulh/mad"
+author = "kjuulh"
 edition = "2021"
 
 [dependencies]
