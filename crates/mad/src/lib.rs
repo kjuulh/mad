@@ -1,6 +1,7 @@
 use futures::stream::FuturesUnordered;
 use futures_util::StreamExt;
 use std::{fmt::Display, sync::Arc};
+use tokio::signal::unix::{signal, SignalKind};
 
 use tokio_util::sync::CancellationToken;
 
@@ -156,6 +157,9 @@ impl Mad {
                     _ = tokio::signal::ctrl_c() => {
                         error_tx.send(CompletionResult { res: Ok(()) , name }).await
                     }
+                    _ = signal_unix_terminate() => {
+                        error_tx.send(CompletionResult { res: Ok(()) , name }).await
+                    }
                 }
             });
         }
@@ -207,6 +211,11 @@ impl Mad {
 
         Ok(())
     }
+}
+
+async fn signal_unix_terminate() {
+    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to bind SIGTERM handler");
+    sigterm.recv().await;
 }
 
 #[async_trait::async_trait]
