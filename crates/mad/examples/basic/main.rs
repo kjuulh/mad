@@ -5,12 +5,12 @@ use tracing::Level;
 
 struct WaitServer {}
 #[async_trait]
-impl mad::Component for WaitServer {
+impl notmad::Component for WaitServer {
     fn name(&self) -> Option<String> {
         Some("WaitServer".into())
     }
 
-    async fn run(&self, cancellation: CancellationToken) -> Result<(), mad::MadError> {
+    async fn run(&self, cancellation: CancellationToken) -> Result<(), notmad::MadError> {
         let millis_wait = rand::thread_rng().gen_range(500..3000);
 
         tracing::debug!("waiting: {}ms", millis_wait);
@@ -28,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
         .with_max_level(Level::TRACE)
         .init();
 
-    mad::Mad::builder()
+    notmad::Mad::builder()
         .add(WaitServer {})
         .add(WaitServer {})
         .add(WaitServer {})

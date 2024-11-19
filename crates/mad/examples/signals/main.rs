@@ -5,12 +5,12 @@ use tracing::Level;
 
 struct WaitServer {}
 #[async_trait]
-impl mad::Component for WaitServer {
+impl notmad::Component for WaitServer {
     fn name(&self) -> Option<String> {
         Some("WaitServer".into())
     }
 
-    async fn run(&self, cancellation: CancellationToken) -> Result<(), mad::MadError> {
+    async fn run(&self, cancellation: CancellationToken) -> Result<(), notmad::MadError> {
         let millis_wait = rand::thread_rng().gen_range(500..3000);
 
         tracing::debug!("waiting: {}ms", millis_wait);
@@ -24,12 +24,12 @@ impl mad::Component for WaitServer {
 
 struct RespectCancel {}
 #[async_trait]
-impl mad::Component for RespectCancel {
+impl notmad::Component for RespectCancel {
     fn name(&self) -> Option<String> {
         Some("RespectCancel".into())
     }
 
-    async fn run(&self, cancellation: CancellationToken) -> Result<(), mad::MadError> {
+    async fn run(&self, cancellation: CancellationToken) -> Result<(), notmad::MadError> {
         cancellation.cancelled().await;
         tracing::debug!("stopping because job is cancelled");
 
@@ -39,12 +39,12 @@ impl mad::Component for RespectCancel {
 
 struct NeverStopServer {}
 #[async_trait]
-impl mad::Component for NeverStopServer {
+impl notmad::Component for NeverStopServer {
     fn name(&self) -> Option<String> {
         Some("NeverStopServer".into())
     }
 
-    async fn run(&self, cancellation: CancellationToken) -> Result<(), mad::MadError> {
+    async fn run(&self, cancellation: CancellationToken) -> Result<(), notmad::MadError> {
         // Simulates a server running for some time. Is normally supposed to be futures blocking indefinitely
         tokio::time::sleep(std::time::Duration::from_millis(999999999)).await;
 
@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
         .with_max_level(Level::TRACE)
         .init();
 
-    mad::Mad::builder()
+    notmad::Mad::builder()
         .add(WaitServer {})
         .add(NeverStopServer {})
         .add(RespectCancel {})

@@ -5,12 +5,12 @@ use tracing::Level;
 
 struct ErrorServer {}
 #[async_trait]
-impl mad::Component for ErrorServer {
+impl notmad::Component for ErrorServer {
     fn name(&self) -> Option<String> {
         Some("ErrorServer".into())
     }
 
-    async fn run(&self, cancellation: CancellationToken) -> Result<(), mad::MadError> {
+    async fn run(&self, cancellation: CancellationToken) -> Result<(), notmad::MadError> {
         let millis_wait = rand::thread_rng().gen_range(500..3000);
 
         tracing::debug!("waiting: {}ms", millis_wait);
@@ -18,7 +18,7 @@ impl mad::Component for ErrorServer {
         // Simulates a server running for some time. Is normally supposed to be futures blocking indefinitely
         tokio::time::sleep(std::time::Duration::from_millis(millis_wait)).await;
 
-        Err(mad::MadError::Inner(anyhow::anyhow!("expected error")))
+        Err(notmad::MadError::Inner(anyhow::anyhow!("expected error")))
     }
 }
 
@@ -30,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Do note that only the first server which returns an error is guaranteed to be handled. This is because if servers don't respect cancellation, they will be dropped
 
-    mad::Mad::builder()
+    notmad::Mad::builder()
         .add(ErrorServer {})
         .add(ErrorServer {})
         .add(ErrorServer {})
