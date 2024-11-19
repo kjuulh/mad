@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2024-11-19
+
+### Added
+- update name
+- respect sigterm
+- include author
+- update with rename
+
+### Docs
+- add examples
+
 ## [0.4.0] - 2024-08-07
 
 ### Added
