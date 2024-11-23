@@ -154,15 +154,37 @@ impl Mad {
                     res = comp.run(job_cancellation) => {
                         error_tx.send(CompletionResult { res , name  }).await
                     }
-                    _ = tokio::signal::ctrl_c() => {
-                        error_tx.send(CompletionResult { res: Ok(()) , name }).await
-                    }
-                    _ = signal_unix_terminate() => {
-                        error_tx.send(CompletionResult { res: Ok(()) , name }).await
-                    }
                 }
             });
         }
+
+        tokio::spawn({
+            let cancellation_token = cancellation_token.child_token();
+            let wait_cancel = self.should_cancel;
+
+            async move {
+                let should_cancel =
+                    |cancel: CancellationToken, wait: Option<std::time::Duration>| async move {
+                        if let Some(cancel_wait) = wait {
+                            tokio::time::sleep(cancel_wait).await;
+
+                            cancel.cancel();
+                        }
+                    };
+
+                tokio::select! {
+                    _ = cancellation_token.cancelled() => {
+                        job_cancellation.cancel();
+                    }
+                    _ = tokio::signal::ctrl_c() => {
+                        should_cancel(job_cancellation, wait_cancel).await;
+                    }
+                    _ = signal_unix_terminate() => {
+                        should_cancel(job_cancellation, wait_cancel).await;
+                    }
+                }
+            }
+        });
 
         let mut futures = FuturesUnordered::new();
         for channel in channels.iter_mut() {
@@ -181,13 +203,6 @@ impl Mad {
                 Ok(_) => {
                     tracing::debug!(component = msg.name, "component ran to completion");
                 }
-            }
-
-            job_cancellation.cancel();
-            if let Some(cancel_wait) = self.should_cancel {
-                tokio::time::sleep(cancel_wait).await;
-
-                cancellation_token.cancel();
             }
         }
 
