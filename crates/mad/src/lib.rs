@@ -133,6 +133,7 @@ impl Mad {
         let mut channels = Vec::new();
         let cancellation_token = CancellationToken::new();
         let job_cancellation = CancellationToken::new();
+        let job_done = CancellationToken::new();
 
         for comp in &self.components {
             let comp = comp.clone();
@@ -160,6 +161,8 @@ impl Mad {
 
         tokio::spawn({
             let cancellation_token = cancellation_token.child_token();
+            let job_done = job_done.child_token();
+
             let wait_cancel = self.should_cancel;
 
             async move {
@@ -175,6 +178,9 @@ impl Mad {
                 tokio::select! {
                     _ = cancellation_token.cancelled() => {
                         job_cancellation.cancel();
+                    }
+                    _ = job_done.cancelled() => {
+                        should_cancel(job_cancellation, wait_cancel).await;
                     }
                     _ = tokio::signal::ctrl_c() => {
                         should_cancel(job_cancellation, wait_cancel).await;
@@ -204,6 +210,8 @@ impl Mad {
                     tracing::debug!(component = msg.name, "component ran to completion");
                 }
             }
+
+            job_done.cancel();
         }
 
         tracing::debug!("ran components");
