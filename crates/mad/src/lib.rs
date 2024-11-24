@@ -160,18 +160,20 @@ impl Mad {
         }
 
         tokio::spawn({
-            let cancellation_token = cancellation_token.child_token();
+            let cancellation_token = cancellation_token;
             let job_done = job_done.child_token();
 
             let wait_cancel = self.should_cancel;
 
             async move {
                 let should_cancel =
-                    |cancel: CancellationToken, wait: Option<std::time::Duration>| async move {
+                    |cancel: CancellationToken,
+                     global_cancel: CancellationToken,
+                     wait: Option<std::time::Duration>| async move {
                         if let Some(cancel_wait) = wait {
-                            tokio::time::sleep(cancel_wait).await;
-
                             cancel.cancel();
+                            tokio::time::sleep(cancel_wait).await;
+                            global_cancel.cancel();
                         }
                     };
 
@@ -180,13 +182,13 @@ impl Mad {
                         job_cancellation.cancel();
                     }
                     _ = job_done.cancelled() => {
-                        should_cancel(job_cancellation, wait_cancel).await;
+                        should_cancel(job_cancellation, cancellation_token, wait_cancel).await;
                     }
                     _ = tokio::signal::ctrl_c() => {
-                        should_cancel(job_cancellation, wait_cancel).await;
+                        should_cancel(job_cancellation,  cancellation_token,wait_cancel).await;
                     }
                     _ = signal_unix_terminate() => {
-                        should_cancel(job_cancellation, wait_cancel).await;
+                        should_cancel(job_cancellation, cancellation_token, wait_cancel).await;
                     }
                 }
             }
