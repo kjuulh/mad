@@ -197,6 +197,7 @@ impl Mad {
             futures.push(channel.recv());
         }
 
+        let mut errors = Vec::new();
         while let Some(Some(msg)) = futures.next().await {
             match msg.res {
                 Err(e) => {
@@ -205,6 +206,7 @@ impl Mad {
                         component = msg.name,
                         "component ran to completion with error"
                     );
+                    errors.push(e);
                 }
                 Ok(_) => {
                     tracing::debug!(component = msg.name, "component ran to completion");
@@ -215,6 +217,9 @@ impl Mad {
         }
 
         tracing::debug!("ran components");
+        if !errors.is_empty() {
+            return Err(MadError::AggregateError(AggregateError { errors }));
+        }
 
         Ok(())
     }
