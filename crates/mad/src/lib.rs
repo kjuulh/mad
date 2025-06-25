@@ -1,9 +1,13 @@
 use futures::stream::FuturesUnordered;
 use futures_util::StreamExt;
 use std::{fmt::Display, sync::Arc};
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{SignalKind, signal};
 
 use tokio_util::sync::CancellationToken;
+
+use crate::waiter::Waiter;
+
+mod waiter;
 
 #[derive(thiserror::Error, Debug)]
 pub enum MadError {
@@ -70,6 +74,17 @@ impl Mad {
         self
     }
 
+    pub fn add_conditional(&mut self, condition: bool, component: impl IntoComponent) -> &mut Self {
+        if condition {
+            self.components.push(component.into_component());
+        } else {
+            self.components
+                .push(Waiter::new(component.into_component()).into_component())
+        }
+
+        self
+    }
+
     pub fn add_fn<F, Fut>(&mut self, f: F) -> &mut Self
     where
         F: Fn(CancellationToken) -> Fut + Send + Sync + 'static,
@@ -100,7 +115,7 @@ impl Mad {
             (Err(run), Err(close)) => {
                 return Err(MadError::AggregateError(AggregateError {
                     errors: vec![run, close],
-                }))
+                }));
             }
             (Ok(_), Ok(_)) => {}
             (Ok(_), Err(close)) => return Err(close),
