@@ -85,6 +85,12 @@ impl Mad {
         self
     }
 
+    pub fn add_wait(&mut self) -> &mut Self {
+        self.components.push(Waiter::default().into_component());
+
+        self
+    }
+
     pub fn add_fn<F, Fut>(&mut self, f: F) -> &mut Self
     where
         F: Fn(CancellationToken) -> Fut + Send + Sync + 'static,
