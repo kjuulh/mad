@@ -49,6 +49,14 @@ impl AggregateError {
 
 impl Display for AggregateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.errors.is_empty() {
+            return Ok(());
+        }
+
+        if self.errors.len() == 1 {
+            return f.write_str(&self.errors.first().unwrap().to_string());
+        }
+
         f.write_str("MadError::AggregateError: (")?;
 
         for error in &self.errors {
