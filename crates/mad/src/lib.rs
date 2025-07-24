@@ -11,10 +11,10 @@ mod waiter;
 
 #[derive(thiserror::Error, Debug)]
 pub enum MadError {
-    #[error("component: {0}")]
+    #[error("component: {0:#?}")]
     Inner(#[source] anyhow::Error),
 
-    #[error("component: {run}")]
+    #[error("component: {run:#?}")]
     RunError { run: anyhow::Error },
 
     #[error("component(s) failed: {close}")]
