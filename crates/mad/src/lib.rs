@@ -11,16 +11,16 @@ mod waiter;
 
 #[derive(thiserror::Error, Debug)]
 pub enum MadError {
-    #[error("component failed: {0}")]
+    #[error("component: {0}")]
     Inner(#[source] anyhow::Error),
 
-    #[error("component(s) failed: {run}")]
+    #[error("component(s): {run}")]
     RunError { run: anyhow::Error },
 
     #[error("component(s) failed: {close}")]
     CloseError { close: anyhow::Error },
 
-    #[error("component(s) failed: {0}")]
+    #[error("component(s): {0}")]
     AggregateError(AggregateError),
 
     #[error("setup not defined")]
