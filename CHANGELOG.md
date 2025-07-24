@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5] - 2025-07-24
+
+### Added
+- print big inner
+
+### Other
+- more error correction
+- correct error test to not be as verbose
+
 ## [0.7.4] - 2025-07-24
 
 ### Added
