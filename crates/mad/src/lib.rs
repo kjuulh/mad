@@ -30,9 +30,21 @@ pub enum MadError {
     CloseNotDefined,
 }
 
+impl From<anyhow::Error> for MadError {
+    fn from(value: anyhow::Error) -> Self {
+        Self::Inner(value)
+    }
+}
+
 #[derive(Debug)]
 pub struct AggregateError {
     errors: Vec<MadError>,
+}
+
+impl AggregateError {
+    pub fn get_errors(&self) -> &[MadError] {
+        &self.errors
+    }
 }
 
 impl Display for AggregateError {

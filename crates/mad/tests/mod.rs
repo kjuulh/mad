@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use notmad::{Component, Mad};
+use notmad::{Component, Mad, MadError};
 use rand::Rng;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -134,6 +134,23 @@ async fn test_can_shutdown_gracefully() -> anyhow::Result<()> {
     // We default wait 100 ms for graceful shutdown, and we explicitly wait 100ms in the sleep routine
     tracing::info!("check millis: {}", check.as_millis());
     assert!(check.as_millis() < 250);
+
+    Ok(())
+}
+
+#[test]
+fn test_can_easily_transform_error() -> anyhow::Result<()> {
+    fn fallible() -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn inner() -> Result<(), MadError> {
+        fallible()?;
+
+        Ok(())
+    }
+
+    inner()?;
 
     Ok(())
 }
