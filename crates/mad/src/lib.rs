@@ -14,7 +14,7 @@ pub enum MadError {
     #[error("component: {0}")]
     Inner(#[source] anyhow::Error),
 
-    #[error("component(s): {run}")]
+    #[error("component: {run}")]
     RunError { run: anyhow::Error },
 
     #[error("component(s) failed: {close}")]
