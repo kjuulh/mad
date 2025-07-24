@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2025-07-24
+
+### Added
+- automatic conversion from anyhow::Error and access to aggregate errors
+
+### Fixed
+- *(deps)* update all dependencies (#30)
+
 ## [0.7.2] - 2025-06-25
 
 ### Added
