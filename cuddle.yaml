@@ -1,6 +1,6 @@
-# yaml-language-server: $schema=https://git.front.kjuulh.io/kjuulh/cuddle/raw/branch/main/schemas/base.json
+# yaml-language-server: $schema=https://git.kjuulh.io/kjuulh/cuddle/raw/branch/main/schemas/base.json
 
-base: "git@git.front.kjuulh.io:kjuulh/cuddle-rust-lib-plan.git"
+base: "git@git.kjuulh.io:kjuulh/cuddle-rust-lib-plan.git"
 
 vars:
   service: "mad"
@@ -12,6 +12,6 @@ please:
     repository: "mad"
     branch: main
   settings:
-    api_url: "https://git.front.kjuulh.io"
+    api_url: "https://git.kjuulh.io"
   actions:
     rust:
