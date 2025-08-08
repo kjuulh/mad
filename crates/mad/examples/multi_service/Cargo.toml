@@ -1,0 +1,15 @@
+[package]
+name = "mad-multi-service-example"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "multi_service"
+path = "main.rs"
+
+[dependencies]
+notmad = { path = "../.." }
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+async-trait = "0.1"
+anyhow = "1"

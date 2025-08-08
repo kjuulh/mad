@@ -1,0 +1,18 @@
+[package]
+name = "mad-comprehensive-example"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "comprehensive"
+path = "main.rs"
+
+[dependencies]
+notmad = { path = "../.." }
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+async-trait = "0.1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+rand = "0.8"
