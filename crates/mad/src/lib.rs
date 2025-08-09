@@ -77,7 +77,7 @@
 
 use futures::stream::FuturesUnordered;
 use futures_util::StreamExt;
-use std::{fmt::Display, sync::Arc};
+use std::{fmt::Display, sync::Arc, error::Error};
 use tokio::signal::unix::{SignalKind, signal};
 
 use tokio_util::sync::CancellationToken;
@@ -96,22 +96,27 @@ pub enum MadError {
     ///
     /// This variant is used when components return errors via the `?` operator
     /// or when converting from `anyhow::Error`.
-    #[error("component: {0:#?}")]
-    Inner(#[source] anyhow::Error),
+    #[error(transparent)]
+    Inner(anyhow::Error),
 
     /// Error that occurred during the run phase of a component.
-    #[error("component: {run:#?}")]
-    RunError { run: anyhow::Error },
+    #[error(transparent)]
+    RunError { 
+        run: anyhow::Error 
+    },
 
     /// Error that occurred during the close phase of a component.
-    #[error("component(s) failed: {close}")]
-    CloseError { close: anyhow::Error },
+    #[error("component(s) failed during close")]
+    CloseError { 
+        #[source]
+        close: anyhow::Error 
+    },
 
     /// Multiple errors from different components.
     ///
     /// This is used when multiple components fail simultaneously,
     /// allowing all errors to be reported rather than just the first one.
-    #[error("component(s): {0}")]
+    #[error("{0}")]
     AggregateError(AggregateError),
 
     /// Returned when a component doesn't implement the optional setup method.
@@ -137,7 +142,7 @@ impl From<anyhow::Error> for MadError {
 ///
 /// When multiple components fail, their errors are collected
 /// into this struct to provide complete error reporting.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub struct AggregateError {
     errors: Vec<MadError>,
 }
@@ -169,17 +174,23 @@ impl Display for AggregateError {
         }
 
         if self.errors.len() == 1 {
-            return f.write_str(&self.errors.first().unwrap().to_string());
+            return write!(f, "{}", self.errors[0]);
         }
 
-        f.write_str("MadError::AggregateError: (")?;
-
-        for error in &self.errors {
-            f.write_str(&error.to_string())?;
-            f.write_str(", ")?;
+        writeln!(f, "{} component errors occurred:", self.errors.len())?;
+        for (i, error) in self.errors.iter().enumerate() {
+            write!(f, "\n[Component {}] {}", i + 1, error)?;
+            
+            // Print the error chain for each component error
+            let mut source = error.source();
+            let mut level = 1;
+            while let Some(err) = source {
+                write!(f, "\n  {}. {}", level, err)?;
+                source = err.source();
+                level += 1;
+            }
         }
-
-        f.write_str(")")
+        Ok(())
     }
 }
 
@@ -769,5 +780,134 @@ where
 {
     async fn run(&self, cancellation_token: CancellationToken) -> Result<(), MadError> {
         self.execute(cancellation_token).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Context;
+
+    #[test]
+    fn test_error_chaining_display() {
+        // Test single error with context chain
+        let base_error = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let error = anyhow::Error::from(base_error)
+            .context("failed to read configuration")
+            .context("unable to initialize database")
+            .context("service startup failed");
+        
+        let mad_error = MadError::Inner(error);
+        let display = format!("{}", mad_error);
+        
+        // Should display the top-level error message
+        assert!(display.contains("service startup failed"));
+        
+        // Test error chain iteration
+        if let MadError::Inner(ref e) = mad_error {
+            let chain: Vec<String> = e.chain().map(|c| c.to_string()).collect();
+            assert_eq!(chain.len(), 4);
+            assert_eq!(chain[0], "service startup failed");
+            assert_eq!(chain[1], "unable to initialize database");
+            assert_eq!(chain[2], "failed to read configuration");
+            assert_eq!(chain[3], "file not found");
+        }
+    }
+
+    #[test]
+    fn test_aggregate_error_display() {
+        let error1 = MadError::Inner(
+            anyhow::anyhow!("database connection failed")
+                .context("failed to connect to PostgreSQL")
+        );
+        
+        let error2 = MadError::Inner(
+            anyhow::anyhow!("port already in use")
+                .context("failed to bind to port 8080")
+                .context("web server initialization failed")
+        );
+        
+        let aggregate = MadError::AggregateError(AggregateError {
+            errors: vec![error1, error2],
+        });
+        
+        let display = format!("{}", aggregate);
+        
+        // Check that it shows multiple errors
+        assert!(display.contains("2 component errors occurred"));
+        assert!(display.contains("[Component 1]"));
+        assert!(display.contains("[Component 2]"));
+        
+        // Check that context chains are displayed
+        assert!(display.contains("failed to connect to PostgreSQL"));
+        assert!(display.contains("database connection failed"));
+        assert!(display.contains("web server initialization failed"));
+        assert!(display.contains("failed to bind to port 8080"));
+        assert!(display.contains("port already in use"));
+    }
+
+    #[test]
+    fn test_single_error_aggregate() {
+        let error = MadError::Inner(anyhow::anyhow!("single error"));
+        let aggregate = AggregateError {
+            errors: vec![error],
+        };
+        
+        let display = format!("{}", aggregate);
+        // Single error should be displayed directly
+        assert!(display.contains("single error"));
+        assert!(!display.contains("component errors occurred"));
+    }
+
+    #[test]
+    fn test_error_source_chain() {
+        let error = MadError::Inner(
+            anyhow::anyhow!("root cause")
+                .context("middle layer")
+                .context("top layer")
+        );
+        
+        // Test that we can access the error chain
+        if let MadError::Inner(ref e) = error {
+            let chain: Vec<String> = e.chain().map(|c| c.to_string()).collect();
+            assert_eq!(chain.len(), 3);
+            assert_eq!(chain[0], "top layer");
+            assert_eq!(chain[1], "middle layer");
+            assert_eq!(chain[2], "root cause");
+        } else {
+            panic!("Expected MadError::Inner");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_component_error_propagation() {
+        struct FailingComponent;
+        
+        #[async_trait::async_trait]
+        impl Component for FailingComponent {
+            fn name(&self) -> Option<String> {
+                Some("test-component".to_string())
+            }
+            
+            async fn run(&self, _cancel: CancellationToken) -> Result<(), MadError> {
+                Err(anyhow::anyhow!("IO error")
+                    .context("failed to open file")
+                    .context("component initialization failed")
+                    .into())
+            }
+        }
+        
+        let result = Mad::builder()
+            .add(FailingComponent)
+            .cancellation(Some(std::time::Duration::from_millis(100)))
+            .run()
+            .await;
+        
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        
+        // Check error display
+        let display = format!("{}", error);
+        assert!(display.contains("component initialization failed"));
     }
 }
