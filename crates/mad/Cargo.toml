@@ -6,6 +6,7 @@ license = "MIT"
 repository = "https://github.com/kjuulh/mad"
 authors = ["kjuulh"]
 edition = "2024"
+readme = "../../README.md"
 
 [dependencies]
 anyhow.workspace = true
