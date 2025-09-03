@@ -5,6 +5,8 @@ base: "git@git.kjuulh.io:kjuulh/cuddle-rust-lib-plan.git"
 vars:
   service: "mad"
   registry: kasperhermansen
+  rust:
+    publish: {}
 
 please:
   project:
