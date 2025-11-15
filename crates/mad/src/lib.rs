@@ -166,6 +166,10 @@ impl AggregateError {
     pub fn get_errors(&self) -> &[MadError] {
         &self.errors
     }
+
+    pub fn take_errors(self) -> Vec<MadError> {
+        self.errors
+    }
 }
 
 impl Display for AggregateError {
