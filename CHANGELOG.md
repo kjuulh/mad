@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2025-11-15
+
+### Added
+- mad not properly surfaces panics
+- add publish
+- add readme
+
+### Fixed
+- *(deps)* update all dependencies (#38)
+
+### Other
+- *(deps)* update rust crate tracing-subscriber to v0.3.20 (#37)
+
 ## [0.8.1] - 2025-08-09
 
 ### Other
