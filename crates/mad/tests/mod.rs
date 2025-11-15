@@ -138,6 +138,30 @@ async fn test_can_shutdown_gracefully() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+#[traced_test]
+async fn test_component_panics_shutdowns_cleanly() -> anyhow::Result<()> {
+    let res = Mad::builder()
+        .add_fn({
+            move |_cancel| async move {
+                panic!("my inner panic");
+            }
+        })
+        .add_fn(|cancel| async move {
+            cancel.cancelled().await;
+
+            Ok(())
+        })
+        .run()
+        .await;
+
+    let err_content = res.unwrap_err().to_string();
+    assert!(err_content.contains("component panicked"));
+    assert!(err_content.contains("my inner panic"));
+
+    Ok(())
+}
+
 #[test]
 fn test_can_easily_transform_error() -> anyhow::Result<()> {
     fn fallible() -> anyhow::Result<()> {
