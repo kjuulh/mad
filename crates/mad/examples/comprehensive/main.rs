@@ -7,7 +7,6 @@
 //! - Graceful shutdown with cancellation tokens
 //! - Concurrent component execution
 
-use async_trait::async_trait;
 use notmad::{Component, Mad, MadError};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -21,7 +20,6 @@ struct WebServer {
     request_count: Arc<AtomicUsize>,
 }
 
-#[async_trait]
 impl Component for WebServer {
     fn name(&self) -> Option<String> {
         Some(format!("web-server-{}", self.port))
@@ -81,7 +79,6 @@ struct JobProcessor {
     processing_interval: Duration,
 }
 
-#[async_trait]
 impl Component for JobProcessor {
     fn name(&self) -> Option<String> {
         Some(format!("job-processor-{}", self.queue_name))
@@ -139,7 +136,6 @@ struct HealthChecker {
     check_interval: Duration,
 }
 
-#[async_trait]
 impl Component for HealthChecker {
     fn name(&self) -> Option<String> {
         Some("health-checker".to_string())
@@ -181,7 +177,6 @@ struct FailingComponent {
     fail_after: Duration,
 }
 
-#[async_trait]
 impl Component for FailingComponent {
     fn name(&self) -> Option<String> {
         Some("failing-component".to_string())
@@ -209,7 +204,6 @@ impl Component for FailingComponent {
 /// Debug component that logs system status periodically.
 struct DebugComponent;
 
-#[async_trait]
 impl Component for DebugComponent {
     fn name(&self) -> Option<String> {
         Some("debug-component".to_string())

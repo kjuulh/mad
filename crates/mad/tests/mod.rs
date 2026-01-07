@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use notmad::{Component, Mad, MadError};
 use rand::Rng;
 use tokio::sync::Mutex;
@@ -9,13 +8,12 @@ use tracing_test::traced_test;
 
 struct NeverEndingRun {}
 
-#[async_trait]
 impl Component for NeverEndingRun {
     fn name(&self) -> Option<String> {
         Some("NeverEndingRun".into())
     }
 
-    async fn run(&self, cancellation: CancellationToken) -> Result<(), notmad::MadError> {
+    async fn run(&self, _cancellation: CancellationToken) -> Result<(), notmad::MadError> {
         let millis_wait = rand::thread_rng().gen_range(50..1000);
 
         tokio::time::sleep(std::time::Duration::from_millis(millis_wait)).await;

@@ -77,11 +77,8 @@
 
 use futures::stream::FuturesUnordered;
 use futures_util::StreamExt;
-use std::{error::Error, fmt::Display, sync::Arc};
-use tokio::{
-    signal::unix::{SignalKind, signal},
-    task::JoinError,
-};
+use std::{error::Error, fmt::Display, pin::Pin, sync::Arc};
+use tokio::signal::unix::{SignalKind, signal};
 
 use tokio_util::sync::CancellationToken;
 
@@ -229,7 +226,7 @@ impl Display for AggregateError {
 /// # }
 /// ```
 pub struct Mad {
-    components: Vec<Arc<dyn Component + Send + Sync + 'static>>,
+    components: Vec<SharedComponent>,
 
     should_cancel: Option<std::time::Duration>,
 }
@@ -397,7 +394,7 @@ impl Mad {
     /// # Arguments
     ///
     /// * `should_cancel` - Duration to wait after cancellation before forcing shutdown.
-    ///                     Pass `None` to wait indefinitely.
+    ///   Pass `None` to wait indefinitely.
     ///
     /// # Example
     ///
@@ -669,8 +666,7 @@ async fn signal_unix_terminate() {
 ///     }
 /// }
 /// ```
-#[async_trait::async_trait]
-pub trait Component {
+pub trait Component: Send + Sync + 'static {
     /// Returns an optional name for the component.
     ///
     /// This name is used in logging and error messages to identify
@@ -698,8 +694,8 @@ pub trait Component {
     ///
     /// If setup fails with an error other than `SetupNotDefined`,
     /// the entire application will stop before any components start running.
-    async fn setup(&self) -> Result<(), MadError> {
-        Err(MadError::SetupNotDefined)
+    fn setup(&self) -> impl Future<Output = Result<(), MadError>> + Send + '_ {
+        async { Err(MadError::SetupNotDefined) }
     }
 
     /// Main execution phase of the component.
@@ -721,7 +717,10 @@ pub trait Component {
     /// # Errors
     ///
     /// Any error returned will trigger shutdown of all other components.
-    async fn run(&self, cancellation_token: CancellationToken) -> Result<(), MadError>;
+    fn run(
+        &self,
+        cancellation_token: CancellationToken,
+    ) -> impl Future<Output = Result<(), MadError>> + Send + '_;
 
     /// Optional cleanup phase called after the component stops.
     ///
@@ -738,8 +737,73 @@ pub trait Component {
     ///
     /// Errors during close are logged but don't prevent other components
     /// from closing.
+    fn close(&self) -> impl Future<Output = Result<(), MadError>> + Send + '_ {
+        async { Err(MadError::CloseNotDefined) }
+    }
+}
+
+trait AsyncComponent: Send + Sync + 'static {
+    fn name_async(&self) -> Option<String>;
+
+    fn setup_async(&self) -> Pin<Box<dyn Future<Output = Result<(), MadError>> + Send + '_>>;
+
+    fn run_async(
+        &self,
+        cancellation_token: CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<(), MadError>> + Send + '_>>;
+
+    fn close_async(&self) -> Pin<Box<dyn Future<Output = Result<(), MadError>> + Send + '_>>;
+}
+
+impl<E: Component> AsyncComponent for E {
+    #[inline(always)]
+    fn name_async(&self) -> Option<String> {
+        self.name()
+    }
+
+    #[inline(always)]
+    fn setup_async(&self) -> Pin<Box<dyn Future<Output = Result<(), MadError>> + Send + '_>> {
+        Box::pin(self.setup())
+    }
+
+    #[inline(always)]
+    fn run_async(
+        &self,
+        cancellation_token: CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<(), MadError>> + Send + '_>> {
+        Box::pin(self.run(cancellation_token))
+    }
+
+    #[inline(always)]
+    fn close_async(&self) -> Pin<Box<dyn Future<Output = Result<(), MadError>> + Send + '_>> {
+        Box::pin(self.close())
+    }
+}
+
+#[derive(Clone)]
+pub struct SharedComponent {
+    component: Arc<dyn AsyncComponent + Send + Sync + 'static>,
+}
+
+impl SharedComponent {
+    #[inline(always)]
+    pub fn name(&self) -> Option<String> {
+        self.component.name_async()
+    }
+
+    #[inline(always)]
+    async fn setup(&self) -> Result<(), MadError> {
+        self.component.setup_async().await
+    }
+
+    #[inline(always)]
+    async fn run(&self, cancellation_token: CancellationToken) -> Result<(), MadError> {
+        self.component.run_async(cancellation_token).await
+    }
+
+    #[inline(always)]
     async fn close(&self) -> Result<(), MadError> {
-        Err(MadError::CloseNotDefined)
+        self.component.close_async().await
     }
 }
 
@@ -769,12 +833,14 @@ pub trait Component {
 /// ```
 pub trait IntoComponent {
     /// Converts self into an Arc-wrapped component.
-    fn into_component(self) -> Arc<dyn Component + Send + Sync + 'static>;
+    fn into_component(self) -> SharedComponent;
 }
 
-impl<T: Component + Send + Sync + 'static> IntoComponent for T {
-    fn into_component(self) -> Arc<dyn Component + Send + Sync + 'static> {
-        Arc::new(self)
+impl<T: Component> IntoComponent for T {
+    fn into_component(self) -> SharedComponent {
+        SharedComponent {
+            component: Arc::new(self),
+        }
     }
 }
 
@@ -798,7 +864,6 @@ where
     }
 }
 
-#[async_trait::async_trait]
 impl<F, Fut> Component for ClosureComponent<F, Fut>
 where
     F: Fn(CancellationToken) -> Fut + Send + Sync + 'static,
@@ -812,7 +877,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Context;
 
     #[test]
     fn test_error_chaining_display() {
@@ -909,7 +973,6 @@ mod tests {
     async fn test_component_error_propagation() {
         struct FailingComponent;
 
-        #[async_trait::async_trait]
         impl Component for FailingComponent {
             fn name(&self) -> Option<String> {
                 Some("test-component".to_string())

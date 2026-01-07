@@ -1,11 +1,9 @@
-use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 struct NestedErrorComponent {
     name: String,
 }
 
-#[async_trait]
 impl notmad::Component for NestedErrorComponent {
     fn name(&self) -> Option<String> {
         Some(self.name.clone())
@@ -28,7 +26,6 @@ impl notmad::Component for NestedErrorComponent {
 
 struct AnotherFailingComponent;
 
-#[async_trait]
 impl notmad::Component for AnotherFailingComponent {
     fn name(&self) -> Option<String> {
         Some("another-component".into())

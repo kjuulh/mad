@@ -4,19 +4,15 @@
 //! without performing any work. Useful for keeping the application alive
 //! or as placeholders in conditional component loading.
 
-use std::sync::Arc;
-
-use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Component, MadError};
+use crate::{Component, IntoComponent, MadError, SharedComponent};
 
 /// A default waiter component that panics if run.
 ///
 /// This is used internally as a placeholder that should never
 /// actually be executed.
-pub struct DefaultWaiter {}
-#[async_trait]
+pub struct DefaultWaiter;
 impl Component for DefaultWaiter {
     async fn run(&self, _cancellation_token: CancellationToken) -> Result<(), MadError> {
         panic!("should never be called");
@@ -38,13 +34,13 @@ impl Component for DefaultWaiter {
 /// let waiter = Waiter::new(service.into_component());
 /// ```
 pub struct Waiter {
-    comp: Arc<dyn Component + Send + Sync + 'static>,
+    comp: SharedComponent,
 }
 
 impl Default for Waiter {
     fn default() -> Self {
         Self {
-            comp: Arc::new(DefaultWaiter {}),
+            comp: DefaultWaiter {}.into_component(),
         }
     }
 }
@@ -54,12 +50,11 @@ impl Waiter {
     ///
     /// The wrapped component's name will be used (prefixed with "waiter/"),
     /// but its run method will not be called.
-    pub fn new(c: Arc<dyn Component + Send + Sync + 'static>) -> Self {
+    pub fn new(c: SharedComponent) -> Self {
         Self { comp: c }
     }
 }
 
-#[async_trait]
 impl Component for Waiter {
     /// Returns the name of the waiter, prefixed with "waiter/".
     ///

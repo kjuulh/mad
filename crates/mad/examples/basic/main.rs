@@ -1,16 +1,14 @@
-use async_trait::async_trait;
 use rand::Rng;
 use tokio_util::sync::CancellationToken;
 use tracing::Level;
 
 struct WaitServer {}
-#[async_trait]
 impl notmad::Component for WaitServer {
     fn name(&self) -> Option<String> {
         Some("WaitServer".into())
     }
 
-    async fn run(&self, cancellation: CancellationToken) -> Result<(), notmad::MadError> {
+    async fn run(&self, _cancellation: CancellationToken) -> Result<(), notmad::MadError> {
         let millis_wait = rand::thread_rng().gen_range(500..3000);
 
         tracing::debug!("waiting: {}ms", millis_wait);

@@ -3,7 +3,6 @@
 //! This example shows how to run a web server, queue processor, and
 //! scheduled task together, with graceful shutdown on Ctrl+C.
 
-use async_trait::async_trait;
 use notmad::{Component, Mad, MadError};
 use tokio::time::{Duration, interval};
 use tokio_util::sync::CancellationToken;
@@ -16,7 +15,6 @@ struct WebServer {
     port: u16,
 }
 
-#[async_trait]
 impl Component for WebServer {
     fn name(&self) -> Option<String> {
         Some(format!("WebServer:{}", self.port))
@@ -70,7 +68,6 @@ struct QueueProcessor {
     queue_name: String,
 }
 
-#[async_trait]
 impl Component for QueueProcessor {
     fn name(&self) -> Option<String> {
         Some(format!("QueueProcessor:{}", self.queue_name))
@@ -116,7 +113,6 @@ struct ScheduledTask {
     interval_secs: u64,
 }
 
-#[async_trait]
 impl Component for ScheduledTask {
     fn name(&self) -> Option<String> {
         Some(format!("ScheduledTask:{}", self.task_name))

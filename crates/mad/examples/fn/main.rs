@@ -1,10 +1,8 @@
-use async_trait::async_trait;
 use rand::Rng;
 use tokio_util::sync::CancellationToken;
 use tracing::Level;
 
 struct WaitServer {}
-#[async_trait]
 impl notmad::Component for WaitServer {
     fn name(&self) -> Option<String> {
         Some("WaitServer".into())

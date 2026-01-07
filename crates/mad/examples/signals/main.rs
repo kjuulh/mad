@@ -1,16 +1,14 @@
-use async_trait::async_trait;
 use rand::Rng;
 use tokio_util::sync::CancellationToken;
 use tracing::Level;
 
 struct WaitServer {}
-#[async_trait]
 impl notmad::Component for WaitServer {
     fn name(&self) -> Option<String> {
         Some("WaitServer".into())
     }
 
-    async fn run(&self, cancellation: CancellationToken) -> Result<(), notmad::MadError> {
+    async fn run(&self, _cancellation: CancellationToken) -> Result<(), notmad::MadError> {
         let millis_wait = rand::thread_rng().gen_range(500..3000);
 
         tracing::debug!("waiting: {}ms", millis_wait);
@@ -23,7 +21,6 @@ impl notmad::Component for WaitServer {
 }
 
 struct RespectCancel {}
-#[async_trait]
 impl notmad::Component for RespectCancel {
     fn name(&self) -> Option<String> {
         Some("RespectCancel".into())
@@ -38,13 +35,12 @@ impl notmad::Component for RespectCancel {
 }
 
 struct NeverStopServer {}
-#[async_trait]
 impl notmad::Component for NeverStopServer {
     fn name(&self) -> Option<String> {
         Some("NeverStopServer".into())
     }
 
-    async fn run(&self, cancellation: CancellationToken) -> Result<(), notmad::MadError> {
+    async fn run(&self, _cancellation: CancellationToken) -> Result<(), notmad::MadError> {
         // Simulates a server running for some time. Is normally supposed to be futures blocking indefinitely
         tokio::time::sleep(std::time::Duration::from_millis(999999999)).await;
 
