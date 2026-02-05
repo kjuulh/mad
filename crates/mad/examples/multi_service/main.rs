@@ -3,7 +3,7 @@
 //! This example shows how to run a web server, queue processor, and
 //! scheduled task together, with graceful shutdown on Ctrl+C.
 
-use notmad::{Component, Mad, MadError};
+use notmad::{Component, ComponentInfo, Mad, MadError};
 use tokio::time::{Duration, interval};
 use tokio_util::sync::CancellationToken;
 
@@ -16,20 +16,20 @@ struct WebServer {
 }
 
 impl Component for WebServer {
-    fn name(&self) -> Option<String> {
-        Some(format!("WebServer:{}", self.port))
+    fn info(&self) -> ComponentInfo {
+        format!("WebServer:{}", self.port).into()
     }
 
     async fn setup(&self) -> Result<(), MadError> {
-        println!("[{}] Binding to port...", self.name().unwrap());
+        println!("[{}] Binding to port...", self.info());
         // Simulate server setup time
         tokio::time::sleep(Duration::from_millis(100)).await;
-        println!("[{}] Ready to accept connections", self.name().unwrap());
+        println!("[{}] Ready to accept connections", self.info());
         Ok(())
     }
 
     async fn run(&self, cancellation: CancellationToken) -> Result<(), MadError> {
-        println!("[{}] Server started", self.name().unwrap());
+        println!("[{}] Server started", self.info());
 
         // Simulate handling requests until shutdown
         let mut request_id = 0;
@@ -38,12 +38,12 @@ impl Component for WebServer {
         while !cancellation.is_cancelled() {
             tokio::select! {
                 _ = cancellation.cancelled() => {
-                    println!("[{}] Shutdown signal received", self.name().unwrap());
+                    println!("[{}] Shutdown signal received", self.info());
                     break;
                 }
                 _ = interval.tick() => {
                     request_id += 1;
-                    println!("[{}] Handling request #{}", self.name().unwrap(), request_id);
+                    println!("[{}] Handling request #{}", self.info(), request_id);
                 }
             }
         }
@@ -52,10 +52,10 @@ impl Component for WebServer {
     }
 
     async fn close(&self) -> Result<(), MadError> {
-        println!("[{}] Closing connections...", self.name().unwrap());
+        println!("[{}] Closing connections...", self.info());
         // Simulate graceful connection drain
         tokio::time::sleep(Duration::from_millis(200)).await;
-        println!("[{}] Server stopped", self.name().unwrap());
+        println!("[{}] Server stopped", self.info());
         Ok(())
     }
 }
@@ -69,12 +69,12 @@ struct QueueProcessor {
 }
 
 impl Component for QueueProcessor {
-    fn name(&self) -> Option<String> {
-        Some(format!("QueueProcessor:{}", self.queue_name))
+    fn info(&self) -> ComponentInfo {
+        format!("QueueProcessor:{}", self.queue_name).into()
     }
 
     async fn run(&self, cancellation: CancellationToken) -> Result<(), MadError> {
-        println!("[{}] Started processing", self.name().unwrap());
+        println!("[{}] Started processing", self.info());
 
         let mut message_count = 0;
 
@@ -83,19 +83,19 @@ impl Component for QueueProcessor {
             // Simulate waiting for and processing a message
             tokio::select! {
                 _ = cancellation.cancelled() => {
-                    println!("[{}] Stopping message processing", self.name().unwrap());
+                    println!("[{}] Stopping message processing", self.info());
                     break;
                 }
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {
                     message_count += 1;
-                    println!("[{}] Processed message #{}", self.name().unwrap(), message_count);
+                    println!("[{}] Processed message #{}", self.info(), message_count);
                 }
             }
         }
 
         println!(
             "[{}] Processed {} messages total",
-            self.name().unwrap(),
+            self.info(),
             message_count
         );
         Ok(())
@@ -114,14 +114,14 @@ struct ScheduledTask {
 }
 
 impl Component for ScheduledTask {
-    fn name(&self) -> Option<String> {
-        Some(format!("ScheduledTask:{}", self.task_name))
+    fn info(&self) -> ComponentInfo {
+        format!("ScheduledTask:{}", self.task_name).into()
     }
 
     async fn run(&self, cancellation: CancellationToken) -> Result<(), MadError> {
         println!(
             "[{}] Scheduled to run every {} seconds",
-            self.name().unwrap(),
+            self.info(),
             self.interval_secs
         );
 
@@ -131,17 +131,17 @@ impl Component for ScheduledTask {
         while !cancellation.is_cancelled() {
             tokio::select! {
                 _ = cancellation.cancelled() => {
-                    println!("[{}] Scheduler stopping", self.name().unwrap());
+                    println!("[{}] Scheduler stopping", self.info());
                     break;
                 }
                 _ = interval.tick() => {
                     run_count += 1;
-                    println!("[{}] Executing run #{}", self.name().unwrap(), run_count);
+                    println!("[{}] Executing run #{}", self.info(), run_count);
 
                     // Simulate task execution
                     tokio::time::sleep(Duration::from_millis(500)).await;
 
-                    println!("[{}] Run #{} completed", self.name().unwrap(), run_count);
+                    println!("[{}] Run #{} completed", self.info(), run_count);
                 }
             }
         }

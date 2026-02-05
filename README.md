@@ -4,165 +4,163 @@
 [![Documentation](https://docs.rs/notmad/badge.svg)](https://docs.rs/notmad)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## Overview
-
-MAD is a robust lifecycle manager designed for long-running Rust operations. It provides a simple, composable way to manage multiple concurrent services within your application, handling graceful startup and shutdown automatically.
-
-### Perfect for:
-- 🌐 Web servers
-- 📨 Queue consumers and message processors  
-- 🔌 gRPC servers
-- ⏰ Cron job runners
-- 🔄 Background workers
-- 📡 Any long-running async operations
-
-## Features
-
-- **Component-based architecture** - Build your application from composable, reusable components
-- **Graceful shutdown** - Automatic handling of shutdown signals with proper cleanup
-- **Concurrent execution** - Run multiple components in parallel with tokio
-- **Error handling** - Built-in error propagation and logging
-- **Cancellation tokens** - Coordinate shutdown across all components
-- **Minimal boilerplate** - Focus on your business logic, not lifecycle management
+A simple lifecycle manager for long-running Rust applications. Run multiple services concurrently with graceful shutdown handling.
 
 ## Installation
 
-Add MAD to your `Cargo.toml`:
-
 ```toml
 [dependencies]
-notmad = "0.7.5"
+notmad = "0.10.0"
 tokio = { version = "1", features = ["full"] }
-async-trait = "0.1"
 ```
 
 ## Quick Start
 
-Here's a simple example of a component that simulates a long-running server:
-
 ```rust
-use mad::{Component, Mad};
-use async_trait::async_trait;
+use notmad::{Component, Mad};
 use tokio_util::sync::CancellationToken;
 
-// Define your component
-struct WebServer {
-    port: u16,
-}
+struct MyService;
 
-#[async_trait]
-impl Component for WebServer {
-    fn name(&self) -> Option<String> {
-        Some(format!("WebServer on port {}", self.port))
-    }
-
-    async fn run(&self, cancellation: CancellationToken) -> Result<(), mad::MadError> {
-        println!("Starting web server on port {}", self.port);
-        
-        // Your server logic here
-        // The cancellation token will be triggered on shutdown
-        tokio::select! {
-            _ = cancellation.cancelled() => {
-                println!("Shutting down web server");
-            }
-            _ = self.serve() => {
-                println!("Server stopped");
-            }
-        }
-        
+impl Component for MyService {
+    async fn run(&self, cancellation: CancellationToken) -> Result<(), notmad::MadError> {
+        println!("Service running...");
+        cancellation.cancelled().await;
+        println!("Service stopped");
         Ok(())
-    }
-}
-
-impl WebServer {
-    async fn serve(&self) {
-        // Simulate a running server
-        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
     }
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Build and run your application
     Mad::builder()
-        .add(WebServer { port: 8080 })
-        .add(WebServer { port: 8081 })  // You can add multiple instances
+        .add(MyService)
         .run()
         .await?;
-
     Ok(())
 }
 ```
 
-## Advanced Usage
+## Basic Usage
 
-### Custom Components
+### Axum Web Server with Graceful Shutdown
 
-Components can be anything that implements the `Component` trait:
+Here's how to run an Axum server with MAD's graceful shutdown:
 
 ```rust
-use mad::{Component, Mad};
-use async_trait::async_trait;
+use axum::{Router, routing::get};
+use notmad::{Component, ComponentInfo};
+use tokio_util::sync::CancellationToken;
 
-struct QueueProcessor {
-    queue_name: String,
+struct WebServer {
+    port: u16,
 }
 
-#[async_trait]
-impl Component for QueueProcessor {
-    fn name(&self) -> Option<String> {
-        Some(format!("QueueProcessor-{}", self.queue_name))
+impl Component for WebServer {
+    fn info(&self) -> ComponentInfo {
+        format!("WebServer:{}", self.port).into()
     }
 
-    async fn run(&self, cancellation: CancellationToken) -> Result<(), mad::MadError> {
-        while !cancellation.is_cancelled() {
-            // Process messages from queue
-            self.process_next_message().await?;
-        }
+    async fn run(&self, cancel: CancellationToken) -> Result<(), notmad::MadError> {
+        let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", self.port))
+            .await?;
+
+        println!("Listening on http://0.0.0.0:{}", self.port);
+
+        // Run server with graceful shutdown
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                cancel.cancelled().await;
+                println!("Shutting down server...");
+            })
+            .await?;
+
         Ok(())
     }
 }
 ```
 
-### Error Handling
-
-MAD provides comprehensive error handling through the `MadError` type with automatic conversion from `anyhow::Error`:
+### Run Multiple Services
 
 ```rust
-async fn run(&self, cancellation: CancellationToken) -> Result<(), mad::MadError> {
-    // Errors automatically convert from anyhow::Error to MadError
-    database_operation().await?;
-    
-    // Or return explicit errors
-    if some_condition {
-        return Err(anyhow::anyhow!("Something went wrong").into());
+Mad::builder()
+    .add(WebServer { port: 8080 })
+    .add(WebServer { port: 8081 })
+    .run()
+    .await?;
+```
+
+### Use Functions as Components
+
+```rust
+Mad::builder()
+    .add_fn(|cancel| async move {
+        println!("Running...");
+        cancel.cancelled().await;
+        Ok(())
+    })
+    .run()
+    .await?;
+```
+
+## Lifecycle Hooks
+
+Components support optional setup and cleanup phases:
+
+```rust
+impl Component for DatabaseService {
+    async fn setup(&self) -> Result<(), notmad::MadError> {
+        println!("Connecting to database...");
+        Ok(())
     }
-    
-    Ok(())
+
+    async fn run(&self, cancel: CancellationToken) -> Result<(), notmad::MadError> {
+        cancel.cancelled().await;
+        Ok(())
+    }
+
+    async fn close(&self) -> Result<(), notmad::MadError> {
+        println!("Closing database connection...");
+        Ok(())
+    }
 }
 ```
 
+## Migration from v0.9
+
+### Breaking Changes
+
+1. **`name()` → `info()`**: Returns `ComponentInfo` instead of `Option<String>`
+   ```rust
+   // Before
+   fn name(&self) -> Option<String> { Some("my-service".into()) }
+
+   // After
+   fn info(&self) -> ComponentInfo { "my-service".into() }
+   ```
+
+2. **No more `async-trait`**: Remove the dependency and `#[async_trait]` attribute
+   ```rust
+   // Before
+   #[async_trait]
+   impl Component for MyService { }
+
+   // After
+   impl Component for MyService { }
+   ```
+
 ## Examples
 
-Check out the [examples directory](crates/mad/examples) for more detailed examples:
-
-- **basic** - Simple component lifecycle
-- **fn** - Using functions as components
-- **signals** - Handling system signals
-- **error_log** - Error handling and logging
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+See [examples directory](crates/mad/examples) for complete working examples.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT - see [LICENSE](LICENSE)
 
-## Author
+## Links
 
-Created and maintained by [kjuulh](https://github.com/kjuulh)
-
-## Repository
-
-Find the source code at [https://github.com/kjuulh/mad](https://github.com/kjuulh/mad)
+- [Documentation](https://docs.rs/notmad)
+- [Repository](https://github.com/kjuulh/mad)
+- [Crates.io](https://crates.io/crates/notmad)

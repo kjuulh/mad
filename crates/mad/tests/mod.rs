@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use notmad::{Component, Mad, MadError};
+use notmad::{Component, ComponentInfo, Mad, MadError};
 use rand::Rng;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -9,8 +9,8 @@ use tracing_test::traced_test;
 struct NeverEndingRun {}
 
 impl Component for NeverEndingRun {
-    fn name(&self) -> Option<String> {
-        Some("NeverEndingRun".into())
+    fn info(&self) -> ComponentInfo {
+        "NeverEndingRun".into()
     }
 
     async fn run(&self, _cancellation: CancellationToken) -> Result<(), notmad::MadError> {

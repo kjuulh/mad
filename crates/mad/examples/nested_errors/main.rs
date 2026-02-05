@@ -1,3 +1,4 @@
+use notmad::ComponentInfo;
 use tokio_util::sync::CancellationToken;
 
 struct NestedErrorComponent {
@@ -5,8 +6,8 @@ struct NestedErrorComponent {
 }
 
 impl notmad::Component for NestedErrorComponent {
-    fn name(&self) -> Option<String> {
-        Some(self.name.clone())
+    fn info(&self) -> ComponentInfo {
+        self.name.clone().into()
     }
 
     async fn run(&self, _cancellation: CancellationToken) -> Result<(), notmad::MadError> {
@@ -27,8 +28,8 @@ impl notmad::Component for NestedErrorComponent {
 struct AnotherFailingComponent;
 
 impl notmad::Component for AnotherFailingComponent {
-    fn name(&self) -> Option<String> {
-        Some("another-component".into())
+    fn info(&self) -> ComponentInfo {
+        "another-component".into()
     }
 
     async fn run(&self, _cancellation: CancellationToken) -> Result<(), notmad::MadError> {

@@ -6,7 +6,7 @@
 
 use tokio_util::sync::CancellationToken;
 
-use crate::{Component, IntoComponent, MadError, SharedComponent};
+use crate::{Component, ComponentInfo, IntoComponent, MadError, SharedComponent};
 
 /// A default waiter component that panics if run.
 ///
@@ -60,10 +60,10 @@ impl Component for Waiter {
     ///
     /// If the wrapped component has a name, it will be "waiter/{name}".
     /// Otherwise, returns "waiter".
-    fn name(&self) -> Option<String> {
-        match self.comp.name() {
-            Some(name) => Some(format!("waiter/{name}")),
-            None => Some("waiter".into()),
+    fn info(&self) -> ComponentInfo {
+        match &self.comp.info().name {
+            Some(name) => format!("waiter/{name}").into(),
+            None => "waiter".into(),
         }
     }
 

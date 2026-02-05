@@ -1,42 +1,21 @@
 //! # MAD - Lifecycle Manager for Rust Applications
 //!
-//! MAD is a robust lifecycle manager designed for long-running Rust operations. It provides
-//! a simple, composable way to manage multiple concurrent services within your application,
-//! handling graceful startup and shutdown automatically.
-//!
-//! ## Overview
-//!
-//! MAD helps you build applications composed of multiple long-running components that need
-//! to be orchestrated together. It handles:
-//!
-//! - **Concurrent execution** of multiple components
-//! - **Graceful shutdown** with cancellation tokens
-//! - **Error aggregation** from multiple components
-//! - **Lifecycle management** with setup, run, and close phases
+//! A simple lifecycle manager for long-running Rust applications. Run multiple services
+//! concurrently with graceful shutdown handling.
 //!
 //! ## Quick Start
 //!
 //! ```rust,no_run
 //! use notmad::{Component, Mad};
-//! use async_trait::async_trait;
 //! use tokio_util::sync::CancellationToken;
 //!
-//! struct MyService {
-//!     name: String,
-//! }
+//! struct MyService;
 //!
-//! #[async_trait]
 //! impl Component for MyService {
-//!     fn name(&self) -> Option<String> {
-//!         Some(self.name.clone())
-//!     }
-//!
-//!     async fn run(&self, cancellation: CancellationToken) -> Result<(), notmad::MadError> {
-//!         // Your service logic here
-//!         while !cancellation.is_cancelled() {
-//!             // Do work...
-//!             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-//!         }
+//!     async fn run(&self, cancel: CancellationToken) -> Result<(), notmad::MadError> {
+//!         println!("Running...");
+//!         cancel.cancelled().await;
+//!         println!("Stopped");
 //!         Ok(())
 //!     }
 //! }
@@ -44,36 +23,20 @@
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
 //!     Mad::builder()
-//!         .add(MyService { name: "service-1".into() })
-//!         .add(MyService { name: "service-2".into() })
+//!         .add(MyService)
 //!         .run()
 //!         .await?;
 //!     Ok(())
 //! }
 //! ```
 //!
-//! ## Component Lifecycle
+//! ## Features
 //!
-//! Components go through three phases:
-//!
-//! 1. **Setup**: Optional initialization phase before components start running
-//! 2. **Run**: Main execution phase where components perform their work
-//! 3. **Close**: Optional cleanup phase after components stop
-//!
-//! ## Error Handling
-//!
-//! MAD provides comprehensive error handling through [`MadError`], which can:
-//! - Wrap errors from individual components
-//! - Aggregate multiple errors when several components fail
-//! - Automatically convert from `anyhow::Error`
-//!
-//! ## Shutdown Behavior
-//!
-//! MAD handles shutdown gracefully:
-//! - Responds to SIGTERM and Ctrl+C signals
-//! - Propagates cancellation tokens to all components
-//! - Waits for components to finish cleanup
-//! - Configurable cancellation timeout
+//! - Run multiple components concurrently
+//! - Graceful shutdown with cancellation tokens
+//! - Optional lifecycle hooks: `setup()`, `run()`, `close()`
+//! - Automatic error aggregation
+//! - SIGTERM and Ctrl+C signal handling
 
 use futures::stream::FuturesUnordered;
 use futures_util::StreamExt;
@@ -205,12 +168,10 @@ impl Display for AggregateError {
 ///
 /// ```rust
 /// use notmad::{Component, Mad};
-/// use async_trait::async_trait;
 /// use tokio_util::sync::CancellationToken;
 ///
 /// struct MyComponent;
 ///
-/// #[async_trait]
 /// impl Component for MyComponent {
 ///     async fn run(&self, _cancel: CancellationToken) -> Result<(), notmad::MadError> {
 ///         Ok(())
@@ -270,10 +231,8 @@ impl Mad {
     ///
     /// ```rust
     /// use notmad::{Component, Mad};
-    /// # use async_trait::async_trait;
     /// # use tokio_util::sync::CancellationToken;
     /// # struct MyService;
-    /// # #[async_trait]
     /// # impl Component for MyService {
     /// #     async fn run(&self, _: CancellationToken) -> Result<(), notmad::MadError> { Ok(()) }
     /// # }
@@ -303,10 +262,8 @@ impl Mad {
     /// ```rust
     /// use notmad::Mad;
     /// # use notmad::Component;
-    /// # use async_trait::async_trait;
     /// # use tokio_util::sync::CancellationToken;
     /// # struct DebugService;
-    /// # #[async_trait]
     /// # impl Component for DebugService {
     /// #     async fn run(&self, _: CancellationToken) -> Result<(), notmad::MadError> { Ok(()) }
     /// # }
@@ -469,7 +426,7 @@ impl Mad {
         tracing::debug!("setting up components");
 
         for comp in &self.components {
-            tracing::trace!(component = &comp.name(), "mad setting up");
+            tracing::trace!(component = %comp.info(), "mad setting up");
 
             match comp.setup().await {
                 Ok(_) | Err(MadError::SetupNotDefined) => {}
@@ -499,15 +456,15 @@ impl Mad {
             channels.push(error_rx);
 
             tokio::spawn(async move {
-                let name = comp.name().clone();
+                let info = comp.info().clone();
 
-                tracing::debug!(component = name, "mad running");
+                tracing::debug!(component = %info, "mad running");
 
                 let handle = tokio::spawn(async move { comp.run(job_cancellation).await });
 
                 tokio::select! {
                     _ = cancellation_token.cancelled() => {
-                        error_tx.send(CompletionResult { res: Ok(()) , name  }).await
+                        error_tx.send(CompletionResult { res: Ok(()) , name: info.name  }).await
                     }
                     res = handle => {
                      let res = match res {
@@ -529,7 +486,7 @@ impl Mad {
                      };
 
 
-                        error_tx.send(CompletionResult { res , name  }).await
+                        error_tx.send(CompletionResult { res , name: info.name  }).await
                     }
                 }
             });
@@ -606,7 +563,7 @@ impl Mad {
         tracing::debug!("closing components");
 
         for comp in &self.components {
-            tracing::trace!(component = &comp.name(), "mad closing");
+            tracing::trace!(component = %comp.info(), "mad closing");
             match comp.close().await {
                 Ok(_) | Err(MadError::CloseNotDefined) => {}
                 Err(e) => return Err(e),
@@ -624,6 +581,46 @@ async fn signal_unix_terminate() {
     sigterm.recv().await;
 }
 
+#[derive(Default, Clone)]
+pub struct ComponentInfo {
+    name: Option<String>,
+}
+
+impl Display for ComponentInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            self.name
+                .as_ref()
+                .map(|n| n.as_str())
+                .unwrap_or_else(|| "unknown"),
+        )
+    }
+}
+
+impl ComponentInfo {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_name(&mut self, name: impl Into<String>) -> &mut Self {
+        self.name = Some(name.into());
+        self
+    }
+}
+
+impl From<String> for ComponentInfo {
+    fn from(value: String) -> Self {
+        Self { name: Some(value) }
+    }
+}
+impl From<&str> for ComponentInfo {
+    fn from(value: &str) -> Self {
+        Self {
+            name: Some(value.into()),
+        }
+    }
+}
+
 /// Trait for implementing MAD components.
 ///
 /// Components represent individual services or tasks that run as part
@@ -633,18 +630,16 @@ async fn signal_unix_terminate() {
 /// # Example
 ///
 /// ```rust
-/// use notmad::{Component, MadError};
-/// use async_trait::async_trait;
+/// use notmad::{Component, ComponentInfo, MadError};
 /// use tokio_util::sync::CancellationToken;
 ///
 /// struct DatabaseConnection {
 ///     url: String,
 /// }
 ///
-/// #[async_trait]
 /// impl Component for DatabaseConnection {
-///     fn name(&self) -> Option<String> {
-///         Some("database".to_string())
+///     fn info(&self) -> ComponentInfo {
+///         "database".into()
 ///     }
 ///
 ///     async fn setup(&self) -> Result<(), MadError> {
@@ -675,8 +670,8 @@ pub trait Component: Send + Sync + 'static {
     /// # Default
     ///
     /// Returns `None` if not overridden.
-    fn name(&self) -> Option<String> {
-        None
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo::default()
     }
 
     /// Optional setup phase called before the component starts running.
@@ -743,7 +738,7 @@ pub trait Component: Send + Sync + 'static {
 }
 
 trait AsyncComponent: Send + Sync + 'static {
-    fn name_async(&self) -> Option<String>;
+    fn info_async(&self) -> ComponentInfo;
 
     fn setup_async(&self) -> Pin<Box<dyn Future<Output = Result<(), MadError>> + Send + '_>>;
 
@@ -757,8 +752,8 @@ trait AsyncComponent: Send + Sync + 'static {
 
 impl<E: Component> AsyncComponent for E {
     #[inline(always)]
-    fn name_async(&self) -> Option<String> {
-        self.name()
+    fn info_async(&self) -> ComponentInfo {
+        self.info()
     }
 
     #[inline(always)]
@@ -787,8 +782,8 @@ pub struct SharedComponent {
 
 impl SharedComponent {
     #[inline(always)]
-    pub fn name(&self) -> Option<String> {
-        self.component.name_async()
+    pub fn info(&self) -> ComponentInfo {
+        self.component.info_async()
     }
 
     #[inline(always)]
@@ -817,12 +812,10 @@ impl SharedComponent {
 ///
 /// ```rust
 /// use notmad::{Component, IntoComponent, Mad};
-/// # use async_trait::async_trait;
 /// # use tokio_util::sync::CancellationToken;
 ///
 /// struct MyService;
 ///
-/// # #[async_trait]
 /// # impl Component for MyService {
 /// #     async fn run(&self, _: CancellationToken) -> Result<(), notmad::MadError> { Ok(()) }
 /// # }
@@ -974,8 +967,8 @@ mod tests {
         struct FailingComponent;
 
         impl Component for FailingComponent {
-            fn name(&self) -> Option<String> {
-                Some("test-component".to_string())
+            fn info(&self) -> ComponentInfo {
+                "test-component".into()
             }
 
             async fn run(&self, _cancel: CancellationToken) -> Result<(), MadError> {

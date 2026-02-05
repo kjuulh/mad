@@ -7,7 +7,7 @@
 //! - Graceful shutdown with cancellation tokens
 //! - Concurrent component execution
 
-use notmad::{Component, Mad, MadError};
+use notmad::{Component, ComponentInfo, Mad, MadError};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::time::{Duration, interval};
@@ -21,8 +21,8 @@ struct WebServer {
 }
 
 impl Component for WebServer {
-    fn name(&self) -> Option<String> {
-        Some(format!("web-server-{}", self.port))
+    fn info(&self) -> ComponentInfo {
+        format!("web-server-{}", self.port).into()
     }
 
     async fn setup(&self) -> Result<(), MadError> {
@@ -80,8 +80,8 @@ struct JobProcessor {
 }
 
 impl Component for JobProcessor {
-    fn name(&self) -> Option<String> {
-        Some(format!("job-processor-{}", self.queue_name))
+    fn info(&self) -> ComponentInfo {
+        format!("job-processor-{}", self.queue_name).into()
     }
 
     async fn setup(&self) -> Result<(), MadError> {
@@ -137,8 +137,8 @@ struct HealthChecker {
 }
 
 impl Component for HealthChecker {
-    fn name(&self) -> Option<String> {
-        Some("health-checker".to_string())
+    fn info(&self) -> ComponentInfo {
+        "health-checker".into()
     }
 
     async fn run(&self, cancellation: CancellationToken) -> Result<(), MadError> {
@@ -178,8 +178,8 @@ struct FailingComponent {
 }
 
 impl Component for FailingComponent {
-    fn name(&self) -> Option<String> {
-        Some("failing-component".to_string())
+    fn info(&self) -> ComponentInfo {
+        "failing-component".into()
     }
 
     async fn run(&self, cancellation: CancellationToken) -> Result<(), MadError> {
@@ -205,8 +205,8 @@ impl Component for FailingComponent {
 struct DebugComponent;
 
 impl Component for DebugComponent {
-    fn name(&self) -> Option<String> {
-        Some("debug-component".to_string())
+    fn info(&self) -> ComponentInfo {
+        "debug-component".into()
     }
 
     async fn run(&self, cancel: CancellationToken) -> Result<(), MadError> {

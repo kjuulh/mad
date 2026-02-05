@@ -1,11 +1,12 @@
+use notmad::ComponentInfo;
 use rand::Rng;
 use tokio_util::sync::CancellationToken;
 use tracing::Level;
 
 struct ErrorServer {}
 impl notmad::Component for ErrorServer {
-    fn name(&self) -> Option<String> {
-        Some("ErrorServer".into())
+    fn info(&self) -> ComponentInfo {
+        "ErrorServer".into()
     }
 
     async fn run(&self, _cancellation: CancellationToken) -> Result<(), notmad::MadError> {
