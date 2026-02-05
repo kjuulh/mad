@@ -128,7 +128,7 @@ impl Component for DatabaseService {
 }
 ```
 
-## Migration from v0.9
+## Migration from v0.10
 
 ### Breaking Changes
 
