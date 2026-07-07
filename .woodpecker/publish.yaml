@@ -1,0 +1,26 @@
+# Publish `notmad` to crates.io when cuddle-please cuts a release tag (`v*`).
+#
+# release.yaml (via cuddle-please) creates the `v<x.y.z>` tag when the release
+# PR merges; that tag fires this pipeline. `cargo publish` is naturally
+# idempotent per version — a tag is only ever cut once, so it publishes exactly
+# the newly released version.
+#
+# Required Woodpecker secret:
+#   cargo_registry_token — a crates.io API token with publish-update scope
+
+when:
+  - event: tag
+    ref: refs/tags/v*
+
+steps:
+  publish:
+    # edition 2024 needs rustc >= 1.85; rust:1-bookworm tracks the latest 1.x.
+    image: rust:1-bookworm
+    environment:
+      CARGO_TERM_COLOR: always
+      CARGO_REGISTRY_TOKEN:
+        from_secret: cargo_registry_token
+    commands:
+      # Verify the tagged commit is green before publishing.
+      - cargo test --all
+      - cargo publish -p notmad

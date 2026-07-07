@@ -1,0 +1,36 @@
+# Release-please-style flow via `cuddle-please` (a Gitea release-please clone).
+#
+# On every push to main, cuddle-please inspects the conventional commits since
+# the last release and either:
+#   * opens/updates a `cuddle-please/release` PR that bumps the version and
+#     regenerates CHANGELOG.md, or
+#   * when that release PR is merged (HEAD is the release commit), cuts the git
+#     tag + a Gitea release. The tag then triggers publish.yaml.
+#
+# cuddle-please runs in "Local" mode here (no Drone env), reading owner / repo /
+# branch / api_url from cuddle.yaml's `please:` block. It needs a Gitea token
+# with repository write to open the PR, cut the release, and push the release
+# branch.
+#
+# Required Woodpecker secret:
+#   cuddle_please_token — a Gitea PAT with repository read/write
+#
+# The image is alpine-based with git; `cuddle-please` pushes the release branch
+# and reads full history for the changelog, so we fetch tags and point `origin`
+# at a token-authenticated URL first.
+
+when:
+  - event: push
+    branch: main
+
+steps:
+  release:
+    image: kasperhermansen/cuddle-please:v0.6.0
+    environment:
+      CUDDLE_PLEASE_TOKEN:
+        from_secret: cuddle_please_token
+    commands:
+      - git config --global --add safe.directory "$CI_WORKSPACE"
+      - git fetch --tags --force
+      - git remote set-url origin "https://$CUDDLE_PLEASE_TOKEN@git.kjuulh.io/$CI_REPO.git"
+      - cuddle-please release --engine gitea
