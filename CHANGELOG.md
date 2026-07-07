@@ -6,6 +6,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-07
+
+### Added
+- ordered staged graceful shutdown (add + IntoStage) (#62)
+  Shutdown is now staged and ordered. `Mad::add` takes an `IntoStage` — a single
+  component (a component is itself a one-member stage), or several grouped into one
+  parallel stage with `stage(a).and(b).and_fn(..)`. Each `add` call is its own
+  stage; stages drain in declaration order (outermost/ingress first), each fully
+  before the next is cancelled, so an ingress stage finishes its in-flight work
+  while the resources it depends on stay alive. Startup stays concurrent.
+  
+  Additive, not a breaking change: existing `add(component)` calls keep compiling
+  and behaving as before, since a lone component is treated as a one-member stage.
+  `and` lives on `Stage` (reached via `stage(..)`), not on components, so a lone
+  component and a stage-of-components stay distinct. This is the inverse of
+  go-garden's `Add` (setup add-order, teardown reverse): here add order *is* drain
+  order. The combinator style mirrors mire-sagas.
+  
+  Components that must shut down together (the old all-at-once behaviour) go in one
+  stage — `add(stage(a).and(b).and(c))`.
+  
+  - new `Stage` + `stage()` + `IntoStage`; `add` takes `impl IntoStage`.
+  - `Mad::topology()` -> `Topology`: stages in drain order; render as a nested
+  diagram (Display) or JSON (to_json), also logged at debug in run(). Mirrors
+  go-garden's service-flow graphic.
+  - pressure tests (ordering proven): strict N-stage order; parallel-in-stage +
+  next-waits-for-all; dependency-stays-alive-during-drain; unresponsive stage
+  force-stopped then next proceeds; topology shape/JSON; and an in-process
+  ALB/ECS load test (24 clients, 0 dropped + correct order).
+  - `staged_shutdown_demo` bin + `tests/signal.rs`: a real process driven with
+  real SIGTERM / SIGKILL, asserting the OS signal path, ordered drain, honored
+  pre-stop delays, zero dropped requests, and exit codes.
+  - `staged_shutdown` example prints the topology and hammers ingress under load.
+  - drive-by: fix existing examples/tests for rand 0.10.
+  - bump 0.11 -> 0.12.
+- bump v0.11
+- replace async-trait with erased box type
+
+### Fixed
+- *(deps)* update rust crate rand to v0.10.2 (#63)
+- *(deps)* update rust crate rand to v0.10.1 (#56)
+- *(deps)* update rust-futures monorepo to v0.3.32 (#50)
+- *(deps)* update rust crate rand to 0.10.0 (#49)
+- *(deps)* update rust crate thiserror to v2.0.18 (#46)
+- *(deps)* update rust crate tokio-util to v0.7.18 (#45)
+
+### Other
+- cuddle-please release + crates.io publish pipelines (#65)
+- add Woodpecker pipeline (fmt, clippy, test, build) (#64)
+- *(deps)* update rust crate anyhow to v1.0.103 (#61)
+- *(deps)* update rust crate tokio to v1.52.3 (#60)
+- *(deps)* update rust crate tokio to v1.52.2 (#59)
+- *(deps)* update rust crate tokio to v1.52.1 (#58)
+- *(deps)* update rust crate tokio to v1.52.0 (#57)
+- *(deps)* update rust crate tokio to v1.51.1 (#55)
+- *(deps)* update rust crate tokio to v1.51.0 (#54)
+- *(deps)* update rust crate tracing-subscriber to v0.3.23 (#53)
+- *(deps)* update rust crate tokio to v1.50.0 (#52)
+- *(deps)* update rust crate anyhow to v1.0.102 (#51)
+- *(deps)* update rust crate tracing-test to v0.2.6 (#48)
+- *(deps)* update rust crate anyhow to v1.0.101 (#47)
+- name() -> info() and removed async_trait
+- *(deps)* update rust crate tokio to v1.49.0 (#44)
+- *(deps)* update rust crate tracing to v0.1.44 (#43)
+- *(deps)* update tokio-tracing monorepo (#41)
+
 ### Added
 - `Mad::topology()` -> `Topology`: the stages in drain order with their
   components. Render it as a nested "middleware" diagram (its `Display` impl) or
