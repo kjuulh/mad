@@ -23,6 +23,20 @@ when:
   - event: push
     branch: main
 
+# Gitea reports this repo's clone_url as the internal `git.i.kjuulh.io`, which the
+# CI runner can't reach. Clone over the public `git.kjuulh.io` (public repo, no
+# auth); cuddle-please needs full history + tags, so fetch them.
+# Remove once Gitea's clone_url / ROOT_URL is corrected server-side.
+clone:
+  git:
+    image: woodpeckerci/plugin-git
+    commands:
+      - git init -b main
+      - git config --global --add safe.directory "$CI_WORKSPACE"
+      - git remote add origin "https://git.kjuulh.io/$CI_REPO.git"
+      - git fetch --tags origin "$CI_COMMIT_REF"
+      - git checkout -qf "$CI_COMMIT_SHA"
+
 steps:
   release:
     image: kasperhermansen/cuddle-please:v0.6.0
