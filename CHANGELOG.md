@@ -6,7 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.11.0] - 2026-07-07
+## [0.12.0] - 2026-07-07
+
+> Released as 0.12.0 rather than 0.11.0: crates.io already had a `notmad 0.11.0`
+> (published ahead of the git tags), so this staged-shutdown release takes the
+> next free version. There is no 0.11.0 on crates.io that contains this feature.
 
 ### Added
 - ordered staged graceful shutdown (add + IntoStage) (#62)
