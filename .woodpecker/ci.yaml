@@ -1,0 +1,23 @@
+# Lint + test notmad on every push to main and every pull request.
+#
+# Pure-Rust library — no external services needed. The `signal` integration
+# test spawns the `staged_shutdown_demo` binary and sends it real
+# SIGTERM/SIGKILL (via libc), so it runs like any other test in the container.
+
+when:
+  - event: push
+    branch: main
+  - event: pull_request
+
+steps:
+  test:
+    # edition 2024 needs rustc >= 1.85; rust:1-bookworm tracks the latest 1.x.
+    image: rust:1-bookworm
+    environment:
+      CARGO_TERM_COLOR: always
+    commands:
+      - rustup component add rustfmt clippy
+      - cargo fmt --all --check
+      - cargo clippy --all-targets -- -D warnings
+      - cargo test --all
+      - cargo build --examples --bins

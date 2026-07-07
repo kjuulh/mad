@@ -278,9 +278,18 @@ async fn drains_stages_in_strict_declaration_order() -> anyhow::Result<()> {
     }
 
     Mad::builder()
-        .add(Recorder { idx: 0, order: order.clone() })
-        .add(Recorder { idx: 1, order: order.clone() })
-        .add(Recorder { idx: 2, order: order.clone() })
+        .add(Recorder {
+            idx: 0,
+            order: order.clone(),
+        })
+        .add(Recorder {
+            idx: 1,
+            order: order.clone(),
+        })
+        .add(Recorder {
+            idx: 2,
+            order: order.clone(),
+        })
         // trigger begins shutdown shortly after start
         .add_fn(|_| async {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -345,7 +354,12 @@ async fn stage_members_drain_in_parallel_and_next_waits_for_all() -> anyhow::Res
     }
 
     Mad::builder()
-        .add(stage(Slow { done: slow_done.clone() }).and(Fast)) // stage 0 (parallel)
+        .add(
+            stage(Slow {
+                done: slow_done.clone(),
+            })
+            .and(Fast),
+        ) // stage 0 (parallel)
         .add(Next {
             slow_done: slow_done.clone(),
             saw: next_saw_all_done.clone(),
@@ -396,7 +410,9 @@ async fn unresponsive_stage_is_forced_then_next_proceeds() -> anyhow::Result<()>
     let start = std::time::Instant::now();
     Mad::builder()
         .add(Stuck) // stage 0 — never responds to cancel
-        .add(After { ran: next_ran.clone() }) // stage 1
+        .add(After {
+            ran: next_ran.clone(),
+        }) // stage 1
         .add_fn(|_| async {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             Ok(())
@@ -490,8 +506,10 @@ async fn alb_load_ordered_shutdown_drops_no_inflight_request() -> anyhow::Result
         }
         async fn run(&self, cancel: CancellationToken) -> Result<(), MadError> {
             cancel.cancelled().await;
-            self.closed_after_ingress
-                .store(self.ingress_drained.load(Ordering::SeqCst), Ordering::SeqCst);
+            self.closed_after_ingress.store(
+                self.ingress_drained.load(Ordering::SeqCst),
+                Ordering::SeqCst,
+            );
             self.alive.store(false, Ordering::SeqCst);
             Ok(())
         }
@@ -587,7 +605,10 @@ async fn alb_load_ordered_shutdown_drops_no_inflight_request() -> anyhow::Result
 
     let served = ingress.served.load(Ordering::SeqCst);
     let failed = ingress.failed.load(Ordering::SeqCst);
-    assert!(served > 0, "the load generator should have served real requests");
+    assert!(
+        served > 0,
+        "the load generator should have served real requests"
+    );
     // 0 dropped connections: nothing failed mid-flight from a torn-down dependency.
     assert_eq!(
         failed, 0,

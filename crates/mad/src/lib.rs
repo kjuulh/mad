@@ -532,7 +532,15 @@ impl Mad {
                         },
                     };
 
-                    let _ = tx.send((stage_idx, CompletionResult { res, name: info.name })).await;
+                    let _ = tx
+                        .send((
+                            stage_idx,
+                            CompletionResult {
+                                res,
+                                name: info.name,
+                            },
+                        ))
+                        .await;
                 });
             }
         }
@@ -594,7 +602,11 @@ impl Mad {
                 continue;
             }
 
-            tracing::debug!(stage = stage_idx, remaining = remaining[stage_idx], "draining stage");
+            tracing::debug!(
+                stage = stage_idx,
+                remaining = remaining[stage_idx],
+                "draining stage"
+            );
             graceful[stage_idx].cancel();
 
             let deadline = async {
@@ -628,7 +640,13 @@ impl Mad {
         while outstanding > 0 {
             match rx.recv().await {
                 Some((stage, completion)) => {
-                    record_completion(&mut errors, &mut remaining, &mut outstanding, stage, completion);
+                    record_completion(
+                        &mut errors,
+                        &mut remaining,
+                        &mut outstanding,
+                        stage,
+                        completion,
+                    );
                 }
                 None => break,
             }
@@ -671,12 +689,7 @@ pub struct ComponentInfo {
 
 impl Display for ComponentInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(
-            self.name
-                .as_ref()
-                .map(|n| n.as_str())
-                .unwrap_or_else(|| "unknown"),
-        )
+        f.write_str(self.name.as_deref().unwrap_or("unknown"))
     }
 }
 
@@ -1056,7 +1069,11 @@ impl Topology {
 
 impl Display for Topology {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "notmad shutdown topology — {} stage(s)", self.stages.len())?;
+        writeln!(
+            f,
+            "notmad shutdown topology — {} stage(s)",
+            self.stages.len()
+        )?;
         writeln!(f, "  startup:  all stages start concurrently")?;
         writeln!(
             f,

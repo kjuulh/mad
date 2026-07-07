@@ -21,3 +21,4 @@ tracing.workspace = true
 [dev-dependencies]
 tracing-subscriber = "0.3.18"
 tracing-test = { version = "0.2.5", features = ["no-env-filter"] }
+libc = "0.2"

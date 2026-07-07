@@ -33,13 +33,11 @@ fn spawn_ready() -> (Child, BufReader<std::process::ChildStdout>) {
     (child, reader)
 }
 
-fn signal(pid: u32, sig: &str) {
-    let status = Command::new("kill")
-        .arg(format!("-{sig}"))
-        .arg(pid.to_string())
-        .status()
-        .expect("run kill");
-    assert!(status.success(), "kill -{sig} failed");
+fn signal(pid: u32, sig: libc::c_int) {
+    // Send the signal directly to the child PID (not via `cargo run`/a shell),
+    // so it actually reaches the app; libc avoids depending on a `kill` binary.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, sig) };
+    assert_eq!(rc, 0, "kill(pid={pid}, sig={sig}) failed");
 }
 
 /// SIGTERM -> ordered graceful drain (ingress, then worker, then publisher),
@@ -52,11 +50,13 @@ fn sigterm_drains_stages_in_order_then_exits_cleanly() {
     std::thread::sleep(Duration::from_millis(120));
 
     let sent = Instant::now();
-    signal(child.id(), "TERM");
+    signal(child.id(), libc::SIGTERM);
 
     // Drain remaining output until the process closes stdout on exit.
     let mut out = String::new();
-    reader.read_to_string(&mut out).expect("read remaining stdout");
+    reader
+        .read_to_string(&mut out)
+        .expect("read remaining stdout");
     let status = child.wait().expect("wait for child");
     let elapsed = sent.elapsed();
 
@@ -67,9 +67,15 @@ fn sigterm_drains_stages_in_order_then_exits_cleanly() {
 
     // Ordered shutdown: ingress fully drains, then worker, then the publisher
     // it depends on.
-    let ingress = out.find("INGRESS drained").expect(&format!("no ingress drain\n{out}"));
-    let worker = out.find("WORKER stopped").expect(&format!("no worker stop\n{out}"));
-    let publisher = out.find("PUBLISHER closed").expect(&format!("no publisher close\n{out}"));
+    let ingress = out
+        .find("INGRESS drained")
+        .unwrap_or_else(|| panic!("no ingress drain\n{out}"));
+    let worker = out
+        .find("WORKER stopped")
+        .unwrap_or_else(|| panic!("no worker stop\n{out}"));
+    let publisher = out
+        .find("PUBLISHER closed")
+        .unwrap_or_else(|| panic!("no publisher close\n{out}"));
     assert!(
         ingress < worker && worker < publisher,
         "shutdown order wrong (ingress<worker<publisher expected)\n{out}"
@@ -99,7 +105,7 @@ fn sigterm_drains_stages_in_order_then_exits_cleanly() {
 fn sigkill_terminates_process_by_signal() {
     let (mut child, _reader) = spawn_ready();
 
-    signal(child.id(), "KILL");
+    signal(child.id(), libc::SIGKILL);
 
     let status = child.wait().expect("wait for child");
     assert!(!status.success(), "SIGKILL must not be a clean exit");
