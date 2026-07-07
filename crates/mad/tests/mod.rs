@@ -763,6 +763,97 @@ async fn pre_stop_accepts_a_custom_async_gate() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// With OS signals disabled, an external `shutdown_on` token drives the ordered
+/// shutdown — the nested-`Mad` case, where a parent owns process signals and
+/// cancels the child. The stage's component must observe cancellation.
+#[tokio::test]
+#[traced_test]
+async fn external_shutdown_token_drives_ordered_shutdown() -> anyhow::Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let drained = Arc::new(AtomicBool::new(false));
+    struct Svc {
+        drained: Arc<AtomicBool>,
+    }
+    impl Component for Svc {
+        async fn run(&self, cancel: CancellationToken) -> Result<(), MadError> {
+            cancel.cancelled().await;
+            self.drained.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    let external = CancellationToken::new();
+    // Fire the external token shortly after start.
+    let firer = {
+        let external = external.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            external.cancel();
+        })
+    };
+
+    let start = std::time::Instant::now();
+    Mad::builder()
+        .signals(false) // no OS signal handler — the parent owns signals
+        .shutdown_on(external)
+        .add(Svc {
+            drained: drained.clone(),
+        })
+        .cancellation(Some(std::time::Duration::from_secs(5)))
+        .run()
+        .await?;
+
+    assert!(
+        drained.load(Ordering::SeqCst),
+        "external token must drive the component's drain"
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "shutdown should follow the external token promptly"
+    );
+    let _ = firer.await;
+    Ok(())
+}
+
+/// `shutdown_on_future` (axum `with_graceful_shutdown`-style): when the raw
+/// future resolves, ordered shutdown begins. notmad bridges it to the token.
+#[tokio::test]
+#[traced_test]
+async fn external_shutdown_future_drives_ordered_shutdown() -> anyhow::Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let drained = Arc::new(AtomicBool::new(false));
+    struct Svc {
+        drained: Arc<AtomicBool>,
+    }
+    impl Component for Svc {
+        async fn run(&self, cancel: CancellationToken) -> Result<(), MadError> {
+            cancel.cancelled().await;
+            self.drained.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    Mad::builder()
+        .signals(false)
+        .shutdown_on_future(async {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        })
+        .add(Svc {
+            drained: drained.clone(),
+        })
+        .cancellation(Some(std::time::Duration::from_secs(5)))
+        .run()
+        .await?;
+
+    assert!(
+        drained.load(Ordering::SeqCst),
+        "resolving the shutdown future must drive the component's drain"
+    );
+    Ok(())
+}
+
 #[test]
 fn test_can_easily_transform_error() -> anyhow::Result<()> {
     fn fallible() -> anyhow::Result<()> {

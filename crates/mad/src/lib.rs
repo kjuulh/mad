@@ -193,6 +193,22 @@ pub struct Mad {
     stages: Vec<StageEntry>,
 
     should_cancel: Option<std::time::Duration>,
+
+    /// Whether to install the OS signal handler (SIGTERM / Ctrl-C) that begins
+    /// shutdown. On by default; disable with [`Mad::signals`] for a nested `Mad`
+    /// whose parent owns the process signals.
+    handle_signals: bool,
+
+    /// An external token that, when cancelled, begins this `Mad`'s ordered
+    /// shutdown — set via [`Mad::shutdown_on`]. Lets a parent drive a nested
+    /// `Mad`'s drain instead of (or alongside) OS signals.
+    external_shutdown: Option<CancellationToken>,
+
+    /// A raw future (axum `with_graceful_shutdown`-style) that, when it resolves,
+    /// begins shutdown — set via [`Mad::shutdown_on_future`]. Bridged to the
+    /// internal shutdown token when `run` starts (so it's polled on the runtime,
+    /// not at build time).
+    external_shutdown_task: Option<Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
 }
 
 /// A stage as stored on [`Mad`]: its components plus an optional pre-stop gate
@@ -225,6 +241,9 @@ impl Mad {
             stages: Vec::new(),
 
             should_cancel: Some(std::time::Duration::from_millis(100)),
+            handle_signals: true,
+            external_shutdown: None,
+            external_shutdown_task: None,
         }
     }
 
@@ -389,6 +408,78 @@ impl Mad {
     /// ```
     pub fn cancellation(&mut self, should_cancel: Option<std::time::Duration>) -> &mut Self {
         self.should_cancel = should_cancel;
+
+        self
+    }
+
+    /// Enable or disable the built-in OS signal handler (SIGTERM / Ctrl-C) that
+    /// begins shutdown. **Enabled by default.**
+    ///
+    /// Disable it for a **nested `Mad`** — one run as a component inside another
+    /// `Mad` (or otherwise embedded in a process whose lifecycle something else
+    /// owns). Two `Mad`s both trapping the process signals race each other; the
+    /// inner one should instead be driven by its parent via [`Mad::shutdown_on`]
+    /// so it drains as part of the parent's ordered shutdown.
+    ///
+    /// ```rust,no_run
+    /// # use notmad::Mad;
+    /// # use tokio_util::sync::CancellationToken;
+    /// # async fn example(parent_cancel: CancellationToken) -> Result<(), notmad::MadError> {
+    /// // A nested Mad: the parent owns process signals and drives shutdown.
+    /// Mad::builder()
+    ///     .signals(false)
+    ///     .shutdown_on(parent_cancel)
+    ///     .run()
+    ///     .await
+    /// # }
+    /// ```
+    ///
+    /// > **Note:** the default is `true` for backwards compatibility, but a
+    /// > self-signal-trapping default is the wrong choice for the common
+    /// > embedded case. The next breaking release should flip this to **off by
+    /// > default** (opt in to signal handling at the process's top-level `Mad`).
+    pub fn signals(&mut self, enabled: bool) -> &mut Self {
+        self.handle_signals = enabled;
+
+        self
+    }
+
+    /// Begin this `Mad`'s ordered shutdown when `token` is cancelled — in
+    /// addition to (or, with [`Mad::signals`]`(false)`, instead of) OS signals.
+    ///
+    /// This is how a parent drives a **nested `Mad`**: hand it the cancellation
+    /// token the parent passes to the wrapping component's `run`, so the inner
+    /// `Mad` drains in step with the parent's staged shutdown rather than only
+    /// on its own process signal.
+    pub fn shutdown_on(&mut self, token: CancellationToken) -> &mut Self {
+        self.external_shutdown = Some(token);
+
+        self
+    }
+
+    /// Begin this `Mad`'s ordered shutdown when `task` (a raw future) resolves —
+    /// the same ergonomic shape as axum's `with_graceful_shutdown`. Internally
+    /// this is bridged to a cancellation token (the future is polled on the
+    /// runtime when [`run`](Mad::run) starts, then cancels the token), so both
+    /// styles are available: pass a [`CancellationToken`] to [`Mad::shutdown_on`],
+    /// or an `async` block here.
+    ///
+    /// ```rust,no_run
+    /// # use notmad::Mad;
+    /// # async fn example() -> Result<(), notmad::MadError> {
+    /// Mad::builder()
+    ///     .shutdown_on_future(async {
+    ///         let _ = tokio::signal::ctrl_c().await;
+    ///     })
+    ///     .run()
+    ///     .await
+    /// # }
+    /// ```
+    pub fn shutdown_on_future<F>(&mut self, task: F) -> &mut Self
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.external_shutdown_task = Some(Box::pin(task));
 
         self
     }
@@ -562,20 +653,45 @@ impl Mad {
         }
         drop(tx);
 
-        // Shutdown is triggered by an OS signal or by any component returning on
-        // its own (mirrors the previous "first done stops the rest").
+        // Shutdown is triggered by: an OS signal (unless disabled via
+        // `signals(false)` — e.g. a nested `Mad` whose parent owns the process
+        // signals), an external token passed to `shutdown_on` (which lets a
+        // parent drive a nested `Mad`'s ordered drain), or any component
+        // returning on its own (mirrors the previous "first done stops the rest").
         let shutdown = CancellationToken::new();
-        tokio::spawn({
-            let shutdown = shutdown.clone();
-            async move {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {}
-                    _ = signal_unix_terminate() => {}
+        if self.handle_signals {
+            tokio::spawn({
+                let shutdown = shutdown.clone();
+                async move {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {}
+                        _ = signal_unix_terminate() => {}
+                    }
+                    tracing::debug!("shutdown signal received");
+                    shutdown.cancel();
                 }
-                tracing::debug!("shutdown signal received");
-                shutdown.cancel();
-            }
-        });
+            });
+        }
+        if let Some(external) = self.external_shutdown.clone() {
+            tokio::spawn({
+                let shutdown = shutdown.clone();
+                async move {
+                    external.cancelled().await;
+                    tracing::debug!("external shutdown token cancelled");
+                    shutdown.cancel();
+                }
+            });
+        }
+        if let Some(task) = self.external_shutdown_task.take() {
+            tokio::spawn({
+                let shutdown = shutdown.clone();
+                async move {
+                    task.await;
+                    tracing::debug!("external shutdown future resolved");
+                    shutdown.cancel();
+                }
+            });
+        }
 
         let mut errors = Vec::new();
 
@@ -601,7 +717,7 @@ impl Mad {
         // Wait for the first trigger: a signal, or a component finishing.
         tokio::select! {
             _ = shutdown.cancelled() => {
-                tracing::debug!("beginning ordered shutdown (signal)");
+                tracing::debug!("beginning ordered shutdown (signal or external token)");
             }
             Some((stage, completion)) = rx.recv() => {
                 record_completion(&mut errors, &mut remaining, &mut outstanding, stage, completion);

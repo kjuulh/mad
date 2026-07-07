@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `Mad::signals(bool)` toggles the built-in OS signal handler (SIGTERM / Ctrl-C).
+  **Enabled by default** (backwards-compatible). Disable it for a *nested* `Mad`
+  — one run as a component inside another `Mad` — so the two don't both trap the
+  process signals and race; drive the inner one from its parent instead.
+- `Mad::shutdown_on(CancellationToken)` and `Mad::shutdown_on_future(impl Future)`
+  begin ordered shutdown when the token is cancelled / the future resolves — in
+  addition to (or, with `signals(false)`, instead of) OS signals. The future
+  form mirrors axum's `with_graceful_shutdown` and is bridged to a token
+  internally; use it to drive a nested `Mad` from its parent's cancellation.
+
+### Deprecated / planned breaking change
+- `signals(true)` is the default only for backwards compatibility. A `Mad`
+  embedded as a component (the common case) should not trap process signals —
+  the top-level `Mad` should. **The next breaking release (1.0) should flip the
+  default to signals *off***, with the process's outermost `Mad` opting in via
+  `signals(true)`. Tracked in issue #68.
+
 ## [0.13.0] - 2026-07-07
 
 ### Added
