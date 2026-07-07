@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Per-stage **pre-stop gate** for graceful edge draining. `stage(x).drain_after(d)`
+  keeps a stage *serving* for `d` after shutdown begins, before its components are
+  asked to drain — sized to the ALB/ECS deregistration window so already-routed /
+  in-flight requests still land on a live listener (ECS deregisters the target and
+  drives the load balancer's connection draining out of band; the app just has to
+  stay up long enough). After the delay the stage drains as usual, with the
+  force-timeout as the backstop.
+- `Stage::pre_stop(impl PreStop)` for an arbitrary async gate, not just a fixed
+  delay: `PreStop` is implemented for any `Fn() -> Future<Output = ()>` (so a
+  closure works directly) and for the provided `DrainAfter(Duration)`. Use it to
+  wait on an in-flight counter reaching zero, an external signal, target-health
+  polling, etc. The gate must be self-bounding — the force-timeout only applies
+  once draining has begun.
+- The shutdown [`Topology`] now surfaces each stage's pre-stop gate: a
+  `pre_stop: Option<String>` label on `TopologyStage`, shown in the diagram
+  (`[drain-after 20s]`) and JSON (`"pre_stop": "drain-after 20s"`).
+
 ## [0.12.0] - 2026-07-07
 
 > Released as 0.12.0 rather than 0.11.0: crates.io already had a `notmad 0.11.0`

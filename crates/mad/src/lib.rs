@@ -190,9 +190,16 @@ pub struct Mad {
     /// declaration order — the first (outermost / ingress) stage first —
     /// advancing only once a stage has fully stopped. Group several components
     /// into a single parallel stage with [`stage`] + [`Stage::and`].
-    stages: Vec<Vec<SharedComponent>>,
+    stages: Vec<StageEntry>,
 
     should_cancel: Option<std::time::Duration>,
+}
+
+/// A stage as stored on [`Mad`]: its components plus an optional pre-stop gate
+/// (see [`Stage::drain_after`] / [`Stage::pre_stop`]).
+struct StageEntry {
+    components: Vec<SharedComponent>,
+    pre_stop: Option<Box<dyn PreStop>>,
 }
 
 struct CompletionResult {
@@ -257,7 +264,11 @@ impl Mad {
     /// # }
     /// ```
     pub fn add(&mut self, stage: impl IntoStage) -> &mut Self {
-        self.stages.push(stage.into_stage().components);
+        let stage = stage.into_stage();
+        self.stages.push(StageEntry {
+            components: stage.components,
+            pre_stop: stage.pre_stop,
+        });
 
         self
     }
@@ -392,9 +403,14 @@ impl Mad {
                 .stages
                 .iter()
                 .enumerate()
-                .map(|(index, components)| TopologyStage {
+                .map(|(index, stage)| TopologyStage {
                     index,
-                    components: components.iter().map(|c| c.info().to_string()).collect(),
+                    pre_stop: stage.pre_stop.as_ref().map(|p| p.label()),
+                    components: stage
+                        .components
+                        .iter()
+                        .map(|c| c.info().to_string())
+                        .collect(),
                 })
                 .collect(),
         }
@@ -454,7 +470,7 @@ impl Mad {
     async fn setup_components(&mut self) -> Result<(), MadError> {
         tracing::debug!("setting up components");
 
-        for comp in self.stages.iter().flatten() {
+        for comp in self.stages.iter().flat_map(|s| s.components.iter()) {
             tracing::trace!(component = %comp.info(), "mad setting up");
 
             match comp.setup().await {
@@ -472,7 +488,7 @@ impl Mad {
         tracing::debug!("running components");
 
         let stage_count = self.stages.len();
-        let total: usize = self.stages.iter().map(|s| s.len()).sum();
+        let total: usize = self.stages.iter().map(|s| s.components.len()).sum();
 
         if total == 0 {
             tracing::debug!("no components to run");
@@ -489,11 +505,11 @@ impl Mad {
 
         // Completions arrive tagged with their stage index.
         let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, CompletionResult)>(total);
-        let mut remaining: Vec<usize> = self.stages.iter().map(|s| s.len()).collect();
+        let mut remaining: Vec<usize> = self.stages.iter().map(|s| s.components.len()).collect();
         let mut outstanding = total;
 
         for (stage_idx, stage) in self.stages.iter().enumerate() {
-            for comp in stage {
+            for comp in &stage.components {
                 let comp = comp.clone();
                 let graceful = graceful[stage_idx].child_token();
                 let force = force[stage_idx].child_token();
@@ -602,6 +618,42 @@ impl Mad {
                 continue;
             }
 
+            // Pre-stop gate: before asking this stage to drain, keep it serving
+            // until its gate resolves. The common case is a fixed delay
+            // ([`DrainAfter`]) matching the ALB/ECS deregistration window, so
+            // already-routed / in-flight requests still land on a live listener;
+            // any async task works (wait for an in-flight counter to hit zero,
+            // an external signal, etc.). Completions that arrive meanwhile are
+            // still recorded. The gate must be self-bounding — the force-timeout
+            // only applies once draining has begun.
+            if let Some(pre_stop) = self.stages[stage_idx].pre_stop.as_ref() {
+                tracing::debug!(
+                    stage = stage_idx,
+                    gate = %pre_stop.label(),
+                    "pre-stop: stage still serving before drain"
+                );
+                let gate = pre_stop.wait();
+                tokio::pin!(gate);
+                loop {
+                    tokio::select! {
+                        _ = &mut gate => break,
+                        maybe = rx.recv() => match maybe {
+                            Some((stage, completion)) => {
+                                record_completion(&mut errors, &mut remaining, &mut outstanding, stage, completion);
+                            }
+                            None => break,
+                        },
+                    }
+                    if remaining[stage_idx] == 0 {
+                        break;
+                    }
+                }
+            }
+
+            if remaining[stage_idx] == 0 {
+                continue;
+            }
+
             tracing::debug!(
                 stage = stage_idx,
                 remaining = remaining[stage_idx],
@@ -663,7 +715,7 @@ impl Mad {
     async fn close_components(&mut self) -> Result<(), MadError> {
         tracing::debug!("closing components");
 
-        for comp in self.stages.iter().flatten() {
+        for comp in self.stages.iter().flat_map(|s| s.components.iter()) {
             tracing::trace!(component = %comp.info(), "mad closing");
             match comp.close().await {
                 Ok(_) | Err(MadError::CloseNotDefined) => {}
@@ -938,6 +990,7 @@ impl<T: Component> IntoComponent for T {
 /// [`Stage::and`], and pass it to [`Mad::add`].
 pub struct Stage {
     components: Vec<SharedComponent>,
+    pre_stop: Option<Box<dyn PreStop>>,
 }
 
 impl Stage {
@@ -957,6 +1010,90 @@ impl Stage {
     {
         self.and(ClosureComponent { inner: Box::new(f) })
     }
+
+    /// Keep this stage **serving** for `delay` after shutdown begins, *before*
+    /// its components are asked to drain — sugar for `.pre_stop(DrainAfter(delay))`.
+    ///
+    /// Sized to the ALB/ECS deregistration window: ECS deregisters the task from
+    /// the target group (and drives the load balancer's connection draining) out
+    /// of band, so the app just has to stay up long enough that already-routed /
+    /// in-flight requests land on a live listener. After the delay, the stage
+    /// drains normally (graceful cancel, then the force-timeout backstop).
+    ///
+    /// ```rust,no_run
+    /// # use notmad::{Component, Mad, stage};
+    /// # use std::time::Duration;
+    /// # use tokio_util::sync::CancellationToken;
+    /// # #[derive(Clone)] struct S;
+    /// # impl Component for S { async fn run(&self, _: CancellationToken) -> Result<(), notmad::MadError> { Ok(()) } }
+    /// # async fn example(http: S, grpc: S) -> Result<(), notmad::MadError> {
+    /// Mad::builder()
+    ///     .add(stage(http).and(grpc).drain_after(Duration::from_secs(20)))
+    ///     .run()
+    ///     .await
+    /// # }
+    /// ```
+    pub fn drain_after(self, delay: std::time::Duration) -> Self {
+        self.pre_stop(DrainAfter(delay))
+    }
+
+    /// Install a custom [`PreStop`] gate: the stage keeps serving until the gate
+    /// resolves, then drains. Use [`DrainAfter`] for a fixed delay (see
+    /// [`Stage::drain_after`]), or any async task — poll target health, wait for
+    /// an in-flight counter to hit zero, block on a channel. The gate must be
+    /// self-bounding; the force-timeout only applies once draining has begun.
+    pub fn pre_stop(mut self, pre_stop: impl PreStop) -> Self {
+        self.pre_stop = Some(Box::new(pre_stop));
+        self
+    }
+}
+
+/// A pre-stop gate: an async task run once, when shutdown reaches a stage,
+/// *before* that stage's components are cancelled. The stage keeps running (and
+/// serving) until [`PreStop::wait`] resolves, then it drains as usual.
+///
+/// The common case is a fixed [`DrainAfter`] delay matching the ALB/ECS
+/// deregistration window, but any async task works — poll a target-group health
+/// signal, wait for an in-flight request counter to reach zero, block on a
+/// channel, etc. Implemented for any `Fn() -> Future<Output = ()>`, so a closure
+/// works directly.
+///
+/// The gate must be **self-bounding** (resolve in finite time): the force-timeout
+/// configured via [`Mad::cancellation`] only kicks in *after* draining begins, so
+/// a gate that never resolves stalls shutdown.
+pub trait PreStop: Send + Sync + 'static {
+    /// Keep the stage serving until this future resolves, then drain.
+    fn wait(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
+
+    /// Short label for the shutdown [`Topology`] diagram. Defaults to `"pre-stop"`.
+    fn label(&self) -> String {
+        "pre-stop".to_string()
+    }
+}
+
+/// The common [`PreStop`] gate: keep the stage serving for a fixed delay (≈ the
+/// ALB/ECS deregistration window) before draining. See [`Stage::drain_after`].
+pub struct DrainAfter(pub std::time::Duration);
+
+impl PreStop for DrainAfter {
+    fn wait(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        let delay = self.0;
+        Box::pin(async move { tokio::time::sleep(delay).await })
+    }
+
+    fn label(&self) -> String {
+        format!("drain-after {:?}", self.0)
+    }
+}
+
+impl<F, Fut> PreStop for F
+where
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    fn wait(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(self())
+    }
 }
 
 /// Start a [`Stage`] from a single component; chain more with [`Stage::and`]:
@@ -972,6 +1109,7 @@ impl Stage {
 pub fn stage(component: impl IntoComponent) -> Stage {
     Stage {
         components: vec![component.into_component()],
+        pre_stop: None,
     }
 }
 
@@ -989,6 +1127,7 @@ impl<T: IntoComponent> IntoStage for T {
     fn into_stage(self) -> Stage {
         Stage {
             components: vec![self.into_component()],
+            pre_stop: None,
         }
     }
 }
@@ -1029,6 +1168,10 @@ pub struct Topology {
 pub struct TopologyStage {
     /// Declaration index, which is also the drain order (0 drains first).
     pub index: usize,
+    /// The pre-stop gate's label, if this stage has one (see [`Stage::pre_stop`]
+    /// / [`Stage::drain_after`]) — e.g. `"drain-after 20s"`. `None` if the stage
+    /// begins draining immediately on shutdown.
+    pub pre_stop: Option<String>,
     /// Names of the components in this stage. They start and drain in parallel.
     pub components: Vec<String>,
 }
@@ -1046,11 +1189,16 @@ impl Topology {
             if i > 0 {
                 out.push(',');
             }
+            let pre_stop = match &st.pre_stop {
+                Some(label) => format!("\"{}\"", esc(label)),
+                None => "null".to_string(),
+            };
             out.push_str(&format!(
-                "{{\"index\":{},\"drain_order\":{},\"parallel\":{},\"components\":[",
+                "{{\"index\":{},\"drain_order\":{},\"parallel\":{},\"pre_stop\":{},\"components\":[",
                 st.index,
                 st.index + 1,
-                st.components.len() > 1
+                st.components.len() > 1,
+                pre_stop,
             ));
             for (j, c) in st.components.iter().enumerate() {
                 if j > 0 {
@@ -1095,7 +1243,11 @@ impl Display for Topology {
             } else {
                 ""
             };
-            writeln!(f, "{indent}└─ stage {} — {order}{parallel}", st.index)?;
+            let gate = match &st.pre_stop {
+                Some(label) => format!("  [{label}]"),
+                None => String::new(),
+            };
+            writeln!(f, "{indent}└─ stage {} — {order}{parallel}{gate}", st.index)?;
             let ci = format!("{indent}   ");
             if st.components.is_empty() {
                 writeln!(f, "{ci}• (empty)")?;

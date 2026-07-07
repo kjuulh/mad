@@ -449,22 +449,35 @@ async fn topology_reports_stages_in_drain_order() -> anyhow::Result<()> {
     }
 
     let mut app = Mad::builder();
-    app.add(stage(Named("http")).and(Named("grpc"))) // stage 0 — parallel
-        .add(Named("publisher")); // stage 1
+    app.add(
+        stage(Named("http"))
+            .and(Named("grpc"))
+            .drain_after(std::time::Duration::from_secs(20)),
+    ) // stage 0 — parallel, with a pre-stop gate
+    .add(Named("publisher")); // stage 1
 
     let topo = app.topology();
     assert_eq!(topo.stages.len(), 2);
     assert_eq!(topo.stages[0].components, vec!["http", "grpc"]);
     assert_eq!(topo.stages[1].components, vec!["publisher"]);
+    // The pre-stop gate is surfaced on the stage that has one, and absent on the rest.
+    assert_eq!(topo.stages[0].pre_stop.as_deref(), Some("drain-after 20s"));
+    assert_eq!(topo.stages[1].pre_stop, None);
 
     let json = topo.to_json();
     assert!(json.contains("\"parallel\":true"), "json: {json}");
     assert!(json.contains("\"http\""));
+    assert!(
+        json.contains("\"pre_stop\":\"drain-after 20s\""),
+        "json: {json}"
+    );
+    assert!(json.contains("\"pre_stop\":null"), "json: {json}");
 
     let diagram = topo.to_string();
     assert!(diagram.contains("drains 1st"), "diagram:\n{diagram}");
     assert!(diagram.contains("drains last"), "diagram:\n{diagram}");
     assert!(diagram.contains("(parallel)"), "diagram:\n{diagram}");
+    assert!(diagram.contains("[drain-after 20s]"), "diagram:\n{diagram}");
 
     Ok(())
 }
@@ -620,6 +633,132 @@ async fn alb_load_ordered_shutdown_drops_no_inflight_request() -> anyhow::Result
     assert!(
         publisher_closed_after_ingress.load(Ordering::SeqCst),
         "publisher (stage 1) must shut down only after ingress (stage 0) has fully drained"
+    );
+    Ok(())
+}
+
+/// A `drain_after` pre-stop gate keeps the stage serving for the delay *after*
+/// shutdown begins, and only then is its component cancelled (drained). A later
+/// stage drains after that — proving the gate delays the whole ordered chain,
+/// not just the gated stage's teardown. This is the ALB/ECS deregistration
+/// window: stay up long enough for already-routed requests to land.
+#[tokio::test]
+#[traced_test]
+async fn drain_after_gate_keeps_stage_serving_then_drains_in_order() -> anyhow::Result<()> {
+    let t0 = std::time::Instant::now();
+    let edge_at = Arc::new(Mutex::new(None::<std::time::Duration>));
+    let inner_at = Arc::new(Mutex::new(None::<std::time::Duration>));
+
+    struct Edge {
+        t0: std::time::Instant,
+        at: Arc<Mutex<Option<std::time::Duration>>>,
+    }
+    impl Component for Edge {
+        fn info(&self) -> ComponentInfo {
+            "edge".into()
+        }
+        async fn run(&self, cancel: CancellationToken) -> Result<(), MadError> {
+            cancel.cancelled().await;
+            *self.at.lock().await = Some(self.t0.elapsed());
+            Ok(())
+        }
+    }
+    struct Inner {
+        t0: std::time::Instant,
+        at: Arc<Mutex<Option<std::time::Duration>>>,
+    }
+    impl Component for Inner {
+        fn info(&self) -> ComponentInfo {
+            "inner".into()
+        }
+        async fn run(&self, cancel: CancellationToken) -> Result<(), MadError> {
+            cancel.cancelled().await;
+            *self.at.lock().await = Some(self.t0.elapsed());
+            Ok(())
+        }
+    }
+
+    Mad::builder()
+        .add(
+            stage(Edge {
+                t0,
+                at: edge_at.clone(),
+            })
+            .drain_after(std::time::Duration::from_millis(200)),
+        ) // stage 0 — gated edge
+        .add(Inner {
+            t0,
+            at: inner_at.clone(),
+        }) // stage 1 — dependency
+        // trigger shutdown ~20ms in
+        .add_fn(|_| async {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            Ok(())
+        })
+        .cancellation(Some(std::time::Duration::from_secs(5)))
+        .run()
+        .await?;
+
+    let edge = edge_at.lock().await.expect("edge drained");
+    let inner = inner_at.lock().await.expect("inner drained");
+    // Shutdown begins ~20ms in; the ~200ms gate must elapse before the edge is
+    // cancelled, so it drains no earlier than ~200ms.
+    assert!(
+        edge >= std::time::Duration::from_millis(180),
+        "edge must keep serving through the pre-stop gate before draining; drained at {edge:?}"
+    );
+    // The inner (later) stage only drains once the gated edge has fully drained.
+    assert!(
+        inner >= edge,
+        "inner (stage 1) must drain after the gated edge (stage 0); edge={edge:?}, inner={inner:?}"
+    );
+    Ok(())
+}
+
+/// `pre_stop` accepts an arbitrary async gate (a closure here), not just a fixed
+/// delay — the stage keeps serving until the gate's future resolves, then drains.
+#[tokio::test]
+#[traced_test]
+async fn pre_stop_accepts_a_custom_async_gate() -> anyhow::Result<()> {
+    let t0 = std::time::Instant::now();
+    let edge_at = Arc::new(Mutex::new(None::<std::time::Duration>));
+
+    struct Edge {
+        t0: std::time::Instant,
+        at: Arc<Mutex<Option<std::time::Duration>>>,
+    }
+    impl Component for Edge {
+        async fn run(&self, cancel: CancellationToken) -> Result<(), MadError> {
+            cancel.cancelled().await;
+            *self.at.lock().await = Some(self.t0.elapsed());
+            Ok(())
+        }
+    }
+
+    Mad::builder()
+        .add(
+            stage(Edge {
+                t0,
+                at: edge_at.clone(),
+            })
+            // Custom gate: any async task. Here it just waits, but it could poll
+            // an in-flight counter, block on a channel, probe target health, etc.
+            .pre_stop(|| async {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            }),
+        )
+        .add_fn(|_| async {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            Ok(())
+        })
+        .cancellation(Some(std::time::Duration::from_secs(5)))
+        .run()
+        .await?;
+
+    let edge = edge_at.lock().await.expect("edge drained");
+    assert!(
+        edge >= std::time::Duration::from_millis(140),
+        "custom gate must hold the stage until its future resolves (~150ms); drained at {edge:?}"
     );
     Ok(())
 }
