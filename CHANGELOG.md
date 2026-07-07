@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-07
+
+### Added
+- per-stage pre-stop gate for graceful edge draining (#66)
+
 ### Added
 - Per-stage **pre-stop gate** for graceful edge draining. `stage(x).drain_after(d)`
   keeps a stage *serving* for `d` after shutdown begins, before its components are
