@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-07-07
+
+### Added
+- opt-out OS signal handling + external shutdown triggers (#69)
+
+### Other
+- clone over public git.kjuulh.io instead of internal host (#70)
+
 ### Added
 - `Mad::signals(bool)` toggles the built-in OS signal handler (SIGTERM / Ctrl-C).
   **Enabled by default** (backwards-compatible). Disable it for a *nested* `Mad`
