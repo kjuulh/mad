@@ -38,8 +38,6 @@
 //! - Automatic error aggregation
 //! - SIGTERM and Ctrl+C signal handling
 
-use futures::stream::FuturesUnordered;
-use futures_util::StreamExt;
 use std::{error::Error, fmt::Display, pin::Pin, sync::Arc};
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -187,7 +185,12 @@ impl Display for AggregateError {
 /// # }
 /// ```
 pub struct Mad {
-    components: Vec<SharedComponent>,
+    /// Components grouped into ordered shutdown stages — one per [`Mad::add`]
+    /// call. Startup is concurrent across all stages; shutdown drains stages in
+    /// declaration order — the first (outermost / ingress) stage first —
+    /// advancing only once a stage has fully stopped. Group several components
+    /// into a single parallel stage with [`stage`] + [`Stage::and`].
+    stages: Vec<Vec<SharedComponent>>,
 
     should_cancel: Option<std::time::Duration>,
 }
@@ -212,37 +215,49 @@ impl Mad {
     /// ```
     pub fn builder() -> Self {
         Self {
-            components: Vec::default(),
+            stages: Vec::new(),
 
             should_cancel: Some(std::time::Duration::from_millis(100)),
         }
     }
 
-    /// Adds a component to the MAD application.
+    /// Adds a **shutdown stage** to the application.
     ///
-    /// Components will be set up in the order they are added,
-    /// run concurrently, and closed in the order they were added.
+    /// `add` takes anything that is [`IntoStage`]: a single component (the
+    /// common case — a component is itself a one-member stage), or several
+    /// components grouped into one stage with [`stage`] + [`Stage::and`] /
+    /// [`Stage::and_fn`]. **Each `add` call is its own stage.**
     ///
-    /// # Arguments
+    /// All components across all stages **start concurrently**. On shutdown,
+    /// stages are drained **in the order they were added**: the first stage is
+    /// cancelled and fully drained — while every later stage is still running,
+    /// so in-flight work isn't starved of its dependencies — then the next
+    /// stage, and so on. Components within one stage are cancelled together and
+    /// drain in parallel. Each stage gets its own drain grace (see
+    /// [`Mad::cancellation`]) before it is force-stopped.
     ///
-    /// * `component` - Any type that implements `Component` or `IntoComponent`
+    /// So declare your outermost / ingress layer first and its dependencies
+    /// later. (This is the inverse of go-garden's `Add`, which sets up in add
+    /// order and tears down in reverse — here add order *is* drain order.)
     ///
     /// # Example
     ///
-    /// ```rust
-    /// use notmad::{Component, Mad};
+    /// ```rust,no_run
+    /// # use notmad::{Mad, Component, stage};
     /// # use tokio_util::sync::CancellationToken;
-    /// # struct MyService;
-    /// # impl Component for MyService {
-    /// #     async fn run(&self, _: CancellationToken) -> Result<(), notmad::MadError> { Ok(()) }
-    /// # }
-    ///
+    /// # #[derive(Clone)] struct S;
+    /// # impl Component for S { async fn run(&self, _: CancellationToken) -> Result<(), notmad::MadError> { Ok(()) } }
+    /// # async fn example(http: S, grpc: S, consumer: S, publisher: S) -> Result<(), notmad::MadError> {
     /// Mad::builder()
-    ///     .add(MyService)
-    ///     .add(MyService);
+    ///     .add(stage(http).and(grpc))   // stage 0 — ingress (http + grpc), drains first, in parallel
+    ///     .add(consumer)                // stage 1 — a lone component is a one-member stage
+    ///     .add(publisher)               // stage 2 — drains last
+    ///     .run()
+    ///     .await
+    /// # }
     /// ```
-    pub fn add(&mut self, component: impl IntoComponent) -> &mut Self {
-        self.components.push(component.into_component());
+    pub fn add(&mut self, stage: impl IntoStage) -> &mut Self {
+        self.stages.push(stage.into_stage().components);
 
         self
     }
@@ -275,13 +290,10 @@ impl Mad {
     /// ```
     pub fn add_conditional(&mut self, condition: bool, component: impl IntoComponent) -> &mut Self {
         if condition {
-            self.components.push(component.into_component());
+            self.add(component)
         } else {
-            self.components
-                .push(Waiter::new(component.into_component()).into_component())
+            self.add(Waiter::new(component.into_component()))
         }
-
-        self
     }
 
     /// Adds a waiter component that does nothing but wait for cancellation.
@@ -302,9 +314,7 @@ impl Mad {
     /// # }
     /// ```
     pub fn add_wait(&mut self) -> &mut Self {
-        self.components.push(Waiter::default().into_component());
-
-        self
+        self.add(Waiter::default())
     }
 
     /// Adds a closure or function as a component.
@@ -372,6 +382,24 @@ impl Mad {
         self
     }
 
+    /// Describe the shutdown [`Topology`]: the stages in drain order and the
+    /// components in each. Handy to log at startup so the shutdown ordering is
+    /// visible — `println!("{}", app.topology())` prints a nested diagram, and
+    /// [`Topology::to_json`] emits JSON.
+    pub fn topology(&self) -> Topology {
+        Topology {
+            stages: self
+                .stages
+                .iter()
+                .enumerate()
+                .map(|(index, components)| TopologyStage {
+                    index,
+                    components: components.iter().map(|c| c.info().to_string()).collect(),
+                })
+                .collect(),
+        }
+    }
+
     /// Runs all components until completion or shutdown.
     ///
     /// This method:
@@ -400,6 +428,7 @@ impl Mad {
     /// ```
     pub async fn run(&mut self) -> Result<(), MadError> {
         tracing::info!("running mad setup");
+        tracing::debug!("shutdown topology:\n{}", self.topology());
 
         self.setup_components().await?;
 
@@ -425,7 +454,7 @@ impl Mad {
     async fn setup_components(&mut self) -> Result<(), MadError> {
         tracing::debug!("setting up components");
 
-        for comp in &self.components {
+        for comp in self.stages.iter().flatten() {
             tracing::trace!(component = %comp.info(), "mad setting up");
 
             match comp.setup().await {
@@ -442,113 +471,167 @@ impl Mad {
     async fn run_components(&mut self) -> Result<(), MadError> {
         tracing::debug!("running components");
 
-        let mut channels = Vec::new();
-        let cancellation_token = CancellationToken::new();
-        let job_cancellation = CancellationToken::new();
-        let job_done = CancellationToken::new();
+        let stage_count = self.stages.len();
+        let total: usize = self.stages.iter().map(|s| s.len()).sum();
 
-        for comp in &self.components {
-            let comp = comp.clone();
-            let cancellation_token = cancellation_token.child_token();
-            let job_cancellation = job_cancellation.child_token();
-
-            let (error_tx, error_rx) = tokio::sync::mpsc::channel::<CompletionResult>(1);
-            channels.push(error_rx);
-
-            tokio::spawn(async move {
-                let info = comp.info().clone();
-
-                tracing::debug!(component = %info, "mad running");
-
-                let handle = tokio::spawn(async move { comp.run(job_cancellation).await });
-
-                tokio::select! {
-                    _ = cancellation_token.cancelled() => {
-                        error_tx.send(CompletionResult { res: Ok(()) , name: info.name  }).await
-                    }
-                    res = handle => {
-                     let res = match res {
-                         Ok(res) => res,
-                         Err(join) => {
-                             match join.source() {
-                                 Some(error) => {
-                                     Err(MadError::RunError{run: anyhow::anyhow!("component aborted: {:?}", error)})
-                                 },
-                                 None => {
-                                     if join.is_panic(){
-                                         Err(MadError::RunError { run: anyhow::anyhow!("component panicked: {}", join) })
-                                     } else {
-                                         Err(MadError::RunError { run: anyhow::anyhow!("component faced unknown error: {}", join) })
-                                     }
-                                 },
-                             }
-                         },
-                     };
-
-
-                        error_tx.send(CompletionResult { res , name: info.name  }).await
-                    }
-                }
-            });
+        if total == 0 {
+            tracing::debug!("no components to run");
+            return Ok(());
         }
 
-        tokio::spawn({
-            let cancellation_token = cancellation_token;
-            let job_done = job_done.child_token();
+        // Per-stage cancellation. `graceful[i]` is handed to stage `i`'s
+        // components as their run cancellation token (asking them to drain);
+        // `force[i]` hard-stops stage `i` once its drain grace has elapsed.
+        let graceful: Vec<CancellationToken> =
+            (0..stage_count).map(|_| CancellationToken::new()).collect();
+        let force: Vec<CancellationToken> =
+            (0..stage_count).map(|_| CancellationToken::new()).collect();
 
-            let wait_cancel = self.should_cancel;
+        // Completions arrive tagged with their stage index.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, CompletionResult)>(total);
+        let mut remaining: Vec<usize> = self.stages.iter().map(|s| s.len()).collect();
+        let mut outstanding = total;
 
-            async move {
-                let should_cancel =
-                    |cancel: CancellationToken,
-                     global_cancel: CancellationToken,
-                     wait: Option<std::time::Duration>| async move {
-                        if let Some(cancel_wait) = wait {
-                            cancel.cancel();
-                            tokio::time::sleep(cancel_wait).await;
-                            global_cancel.cancel();
-                        }
+        for (stage_idx, stage) in self.stages.iter().enumerate() {
+            for comp in stage {
+                let comp = comp.clone();
+                let graceful = graceful[stage_idx].child_token();
+                let force = force[stage_idx].child_token();
+                let tx = tx.clone();
+
+                tokio::spawn(async move {
+                    let info = comp.info().clone();
+
+                    tracing::debug!(component = %info, stage = stage_idx, "mad running");
+
+                    let handle = tokio::spawn(async move { comp.run(graceful).await });
+
+                    let res = tokio::select! {
+                        _ = force.cancelled() => Ok(()),
+                        res = handle => match res {
+                            Ok(res) => res,
+                            Err(join) => Err(match join.source() {
+                                Some(error) => MadError::RunError {
+                                    run: anyhow::anyhow!("component aborted: {:?}", error),
+                                },
+                                None => {
+                                    if join.is_panic() {
+                                        MadError::RunError {
+                                            run: anyhow::anyhow!("component panicked: {}", join),
+                                        }
+                                    } else {
+                                        MadError::RunError {
+                                            run: anyhow::anyhow!(
+                                                "component faced unknown error: {}",
+                                                join
+                                            ),
+                                        }
+                                    }
+                                }
+                            }),
+                        },
                     };
 
+                    let _ = tx.send((stage_idx, CompletionResult { res, name: info.name })).await;
+                });
+            }
+        }
+        drop(tx);
+
+        // Shutdown is triggered by an OS signal or by any component returning on
+        // its own (mirrors the previous "first done stops the rest").
+        let shutdown = CancellationToken::new();
+        tokio::spawn({
+            let shutdown = shutdown.clone();
+            async move {
                 tokio::select! {
-                    _ = cancellation_token.cancelled() => {
-                        job_cancellation.cancel();
-                    }
-                    _ = job_done.cancelled() => {
-                        should_cancel(job_cancellation, cancellation_token, wait_cancel).await;
-                    }
-                    _ = tokio::signal::ctrl_c() => {
-                        should_cancel(job_cancellation,  cancellation_token,wait_cancel).await;
-                    }
-                    _ = signal_unix_terminate() => {
-                        should_cancel(job_cancellation, cancellation_token, wait_cancel).await;
-                    }
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = signal_unix_terminate() => {}
                 }
+                tracing::debug!("shutdown signal received");
+                shutdown.cancel();
             }
         });
 
-        let mut futures = FuturesUnordered::new();
-        for channel in channels.iter_mut() {
-            futures.push(channel.recv());
-        }
-
         let mut errors = Vec::new();
-        while let Some(Some(msg)) = futures.next().await {
-            match msg.res {
+
+        fn record_completion(
+            errors: &mut Vec<MadError>,
+            remaining: &mut [usize],
+            outstanding: &mut usize,
+            stage: usize,
+            completion: CompletionResult,
+        ) {
+            let CompletionResult { res, name } = completion;
+            *outstanding -= 1;
+            remaining[stage] -= 1;
+            match res {
                 Err(e) => {
-                    tracing::debug!(
-                        error = e.to_string(),
-                        component = msg.name,
-                        "component ran to completion with error"
-                    );
+                    tracing::debug!(error = e.to_string(), component = ?name, stage, "component completed with error");
                     errors.push(e);
                 }
-                Ok(_) => {
-                    tracing::debug!(component = msg.name, "component ran to completion");
-                }
+                Ok(_) => tracing::debug!(component = ?name, stage, "component completed"),
+            }
+        }
+
+        // Wait for the first trigger: a signal, or a component finishing.
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                tracing::debug!("beginning ordered shutdown (signal)");
+            }
+            Some((stage, completion)) = rx.recv() => {
+                record_completion(&mut errors, &mut remaining, &mut outstanding, stage, completion);
+                tracing::debug!("beginning ordered shutdown (component completed)");
+            }
+        }
+
+        // Drain stages in declaration order. Only advance to the next stage once
+        // the current one has fully stopped, so a stage's dependencies (later
+        // stages) stay alive while it drains its in-flight work.
+        let grace = self.should_cancel;
+        for stage_idx in 0..stage_count {
+            if remaining[stage_idx] == 0 {
+                continue;
             }
 
-            job_done.cancel();
+            tracing::debug!(stage = stage_idx, remaining = remaining[stage_idx], "draining stage");
+            graceful[stage_idx].cancel();
+
+            let deadline = async {
+                match grace {
+                    Some(d) => tokio::time::sleep(d).await,
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            tokio::pin!(deadline);
+            let mut forced = false;
+
+            while remaining[stage_idx] > 0 {
+                tokio::select! {
+                    maybe = rx.recv() => match maybe {
+                        Some((stage, completion)) => {
+                            record_completion(&mut errors, &mut remaining, &mut outstanding, stage, completion);
+                        }
+                        None => break,
+                    },
+                    _ = &mut deadline, if !forced => {
+                        tracing::warn!(stage = stage_idx, "stage drain grace elapsed; forcing stop");
+                        forced = true;
+                        force[stage_idx].cancel();
+                    }
+                }
+            }
+        }
+
+        // Any remaining completions (later-stage components that had already
+        // returned on their own) — collect their errors too.
+        while outstanding > 0 {
+            match rx.recv().await {
+                Some((stage, completion)) => {
+                    record_completion(&mut errors, &mut remaining, &mut outstanding, stage, completion);
+                }
+                None => break,
+            }
         }
 
         tracing::debug!("ran components");
@@ -562,7 +645,7 @@ impl Mad {
     async fn close_components(&mut self) -> Result<(), MadError> {
         tracing::debug!("closing components");
 
-        for comp in &self.components {
+        for comp in self.stages.iter().flatten() {
             tracing::trace!(component = %comp.info(), "mad closing");
             match comp.close().await {
                 Ok(_) | Err(MadError::CloseNotDefined) => {}
@@ -834,6 +917,181 @@ impl<T: Component> IntoComponent for T {
         SharedComponent {
             component: Arc::new(self),
         }
+    }
+}
+
+/// A shutdown stage: one or more components that start and drain together (in
+/// parallel). Create one with [`stage`], chain more components with
+/// [`Stage::and`], and pass it to [`Mad::add`].
+pub struct Stage {
+    components: Vec<SharedComponent>,
+}
+
+impl Stage {
+    /// Add another component to this stage. Members of a stage run and drain in
+    /// parallel.
+    pub fn and(mut self, component: impl IntoComponent) -> Self {
+        self.components.push(component.into_component());
+        self
+    }
+
+    /// Add a closure component to this stage — sugar for [`Stage::and`] over an
+    /// `add_fn`-style closure.
+    pub fn and_fn<F, Fut>(self, f: F) -> Self
+    where
+        F: Fn(CancellationToken) -> Fut + Send + Sync + 'static,
+        Fut: futures::Future<Output = Result<(), MadError>> + Send + 'static,
+    {
+        self.and(ClosureComponent { inner: Box::new(f) })
+    }
+}
+
+/// Start a [`Stage`] from a single component; chain more with [`Stage::and`]:
+///
+/// ```rust
+/// # use notmad::{Component, Mad, stage};
+/// # use tokio_util::sync::CancellationToken;
+/// # #[derive(Clone)] struct S;
+/// # impl Component for S { async fn run(&self, _: CancellationToken) -> Result<(), notmad::MadError> { Ok(()) } }
+/// # let (http, grpc) = (S, S);
+/// Mad::builder().add(stage(http).and(grpc));
+/// ```
+pub fn stage(component: impl IntoComponent) -> Stage {
+    Stage {
+        components: vec![component.into_component()],
+    }
+}
+
+/// Anything [`Mad::add`] accepts: a single component (a one-member stage), or a
+/// [`Stage`] built with [`stage`] + [`Stage::and`].
+///
+/// `and` lives on [`Stage`], not on components, so a lone component and "a stage
+/// of components" stay distinct — you opt into a stage explicitly via [`stage`].
+pub trait IntoStage {
+    /// Convert into a [`Stage`].
+    fn into_stage(self) -> Stage;
+}
+
+impl<T: IntoComponent> IntoStage for T {
+    fn into_stage(self) -> Stage {
+        Stage {
+            components: vec![self.into_component()],
+        }
+    }
+}
+
+impl IntoStage for Stage {
+    fn into_stage(self) -> Stage {
+        self
+    }
+}
+
+/// A snapshot of the app's shutdown topology: the stages in **drain order**
+/// (stage 0 drains first, each fully before the next) and the components in
+/// each. Obtain it with [`Mad::topology`] and render it as a nested diagram via
+/// the [`Display`](std::fmt::Display) impl, or as JSON with [`Topology::to_json`].
+///
+/// ```rust
+/// # use notmad::{Component, Mad, stage};
+/// # use tokio_util::sync::CancellationToken;
+/// # #[derive(Clone)] struct S;
+/// # impl Component for S {
+/// #     fn info(&self) -> notmad::ComponentInfo { "svc".into() }
+/// #     async fn run(&self, _: CancellationToken) -> Result<(), notmad::MadError> { Ok(()) }
+/// # }
+/// # let (http, grpc, publisher) = (S, S, S);
+/// let mut app = Mad::builder();
+/// app.add(stage(http).and(grpc)).add(publisher);
+/// println!("{}", app.topology());       // pretty nested diagram
+/// println!("{}", app.topology().to_json());
+/// ```
+#[derive(Debug, Clone)]
+pub struct Topology {
+    /// Stages in drain order — index 0 drains first, each fully before the next.
+    pub stages: Vec<TopologyStage>,
+}
+
+/// One stage within a [`Topology`].
+#[derive(Debug, Clone)]
+pub struct TopologyStage {
+    /// Declaration index, which is also the drain order (0 drains first).
+    pub index: usize,
+    /// Names of the components in this stage. They start and drain in parallel.
+    pub components: Vec<String>,
+}
+
+impl Topology {
+    /// Render as compact JSON (dependency-free).
+    pub fn to_json(&self) -> String {
+        fn esc(s: &str) -> String {
+            s.replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n")
+        }
+        let mut out = String::from("{\"stages\":[");
+        for (i, st) in self.stages.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!(
+                "{{\"index\":{},\"drain_order\":{},\"parallel\":{},\"components\":[",
+                st.index,
+                st.index + 1,
+                st.components.len() > 1
+            ));
+            for (j, c) in st.components.iter().enumerate() {
+                if j > 0 {
+                    out.push(',');
+                }
+                out.push('"');
+                out.push_str(&esc(c));
+                out.push('"');
+            }
+            out.push_str("]}");
+        }
+        out.push_str("]}");
+        out
+    }
+}
+
+impl Display for Topology {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "notmad shutdown topology — {} stage(s)", self.stages.len())?;
+        writeln!(f, "  startup:  all stages start concurrently")?;
+        writeln!(
+            f,
+            "  shutdown: stages drain top-to-bottom, each fully before the next"
+        )?;
+        if self.stages.is_empty() {
+            return writeln!(f, "  (no components)");
+        }
+        let last = self.stages.len() - 1;
+        for st in &self.stages {
+            let indent = "   ".repeat(st.index);
+            let order = match st.index {
+                0 => "drains 1st".to_string(),
+                i if i == last => "drains last".to_string(),
+                i => format!("drains #{}", i + 1),
+            };
+            let parallel = if st.components.len() > 1 {
+                "  (parallel)"
+            } else {
+                ""
+            };
+            writeln!(f, "{indent}└─ stage {} — {order}{parallel}", st.index)?;
+            let ci = format!("{indent}   ");
+            if st.components.is_empty() {
+                writeln!(f, "{ci}• (empty)")?;
+            } else {
+                for c in &st.components {
+                    writeln!(f, "{ci}• {c}")?;
+                }
+            }
+            if st.index != last {
+                writeln!(f, "{ci}▼")?;
+            }
+        }
+        Ok(())
     }
 }
 

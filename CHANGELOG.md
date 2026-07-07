@@ -6,6 +6,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `Mad::topology()` -> `Topology`: the stages in drain order with their
+  components. Render it as a nested "middleware" diagram (its `Display` impl) or
+  as JSON (`Topology::to_json`) to make the shutdown ordering obvious; it's also
+  logged at `debug` in `run()`.
+- `staged_shutdown_demo` binary — a real-process staged-shutdown demo under
+  concurrent load, driven by process-level tests (`tests/signal.rs`) that send
+  real SIGTERM / SIGKILL to verify the OS signal path, ordered drain, honored
+  pre-stop delays, zero dropped requests, and exit codes.
+
+### Changed (BREAKING)
+- Ordered, staged graceful shutdown. `Mad::add` now takes an `IntoStage`: a
+  single component (a component is itself a one-member stage), or several
+  components grouped into one parallel stage with `stage(a).and(b).and_fn(..)`.
+  **Each `add` call is its own stage.** On shutdown, stages drain in declaration
+  order — the first (outermost / ingress) stage first, each drained fully before
+  the next is cancelled — so an ingress stage finishes its in-flight work while
+  the resources it depends on (queues, publishers, pools) are still alive.
+  Startup stays concurrent across all stages.
+
+  `and` lives on `Stage` (reached via `stage(..)`), not on components, so a lone
+  component and a stage-of-components stay distinct. This is the inverse of
+  go-garden's `Add` (set up in add order, tear down in reverse); here **add
+  order is drain order**.
+
+  Migration: the previous "all components shut down together" behaviour is now a
+  single stage — `.add(stage(a).and(b).and(c))`. Independent, ordered layers use
+  separate `.add(..)` calls. See the new `staged_shutdown` example.
+
 ## [0.10.0] - 2025-11-15
 
 ### Added

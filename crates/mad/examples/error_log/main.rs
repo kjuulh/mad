@@ -1,5 +1,4 @@
 use notmad::ComponentInfo;
-use rand::Rng;
 use tokio_util::sync::CancellationToken;
 use tracing::Level;
 
@@ -10,7 +9,7 @@ impl notmad::Component for ErrorServer {
     }
 
     async fn run(&self, _cancellation: CancellationToken) -> Result<(), notmad::MadError> {
-        let millis_wait = rand::thread_rng().gen_range(500..3000);
+        let millis_wait = rand::random_range(500..3000);
 
         tracing::debug!("waiting: {}ms", millis_wait);
 
