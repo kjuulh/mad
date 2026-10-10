@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-10-10
+
+### Fixed
+- *(deps)* update rust crate tokio-util to v0.7.20 (#87)
+- *(deps)* update rust crate thiserror to v2.0.21 (#84)
+- *(deps)* update rust crate rand to v0.10.3 (#83)
+- *(deps)* update rust-futures monorepo to v0.3.34 (#82)
+- *(deps)* update rust crate thiserror to v2.0.20 (#81)
+- *(deps)* update all dependencies (#80)
+- *(deps)* update rust-futures monorepo to v0.3.33 (#78)
+- *(deps)* update all dependencies (#77)
+
+### Other
+- *(deps)* update rust crate tokio to v1.53.2 (#86)
+- *(deps)* update rust crate libc to v0.2.190 (#85)
+- *(deps)* update all dependencies (#79)
+- *(deps)* update rust crate tokio to v1.53.0 (#76)
+- *(deps)* update rust crate tokio to v1.52.4 (#75)
+- *(deps)* update rust crate libc to v0.2.186 (#73)
+
 ## [0.14.0] - 2026-07-07
 
 ### Added
