@@ -6,6 +6,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-10-17
+
+### Fixed
+- *(deps)* update rust crate tokio-util to v0.7.20 (#87)
+- *(deps)* update rust crate thiserror to v2.0.21 (#84)
+- *(deps)* update rust crate rand to v0.10.3 (#83)
+- *(deps)* update rust-futures monorepo to v0.3.34 (#82)
+- *(deps)* update rust crate thiserror to v2.0.20 (#81)
+- *(deps)* update all dependencies (#80)
+- *(deps)* update rust-futures monorepo to v0.3.33 (#78)
+- *(deps)* update all dependencies (#77)
+
+### Other
+- *(deps)* update rust crate libc to v0.2.191 (#89)
+- cache builds through the shared CI cache
+  The test step compiled the whole dependency tree in every pipeline. It
+  now uses the shared CI cache, with the lines woodpecker-forest 0.1.14's
+  ci_cache function generates for forest projects:
+  - The step holds no key: it reads the public cache, restores its target
+  snapshot, and leaves stats. The image carries no sccache, so only the
+  snapshot applies.
+  - A generated cache-save step holds ci_cache_public (an organisation
+  secret). It runs only on pushes to main and manual runs, and it never
+  fails the pipeline.
+  - The client comes from its public package with a pinned sha256. This
+  repository is public, and the workflow names no internal address.
+  
+  What does not change: every check the step runs, and release.yaml.
+  
+  Verified rather than reasoned: the YAML parses with every command a
+  string; no command names a CICACHE_ variable; cache-save is the only
+  step with a cache secret and its `when` excludes pull_request; the file
+  names no internal address; `ci-cache check .woodpecker` passes.
+  
+  Not run: the pipeline (it needs this push).
+- *(deps)* update rust crate tokio to v1.53.3 (#88)
+- *(deps)* update rust crate tokio to v1.53.2 (#86)
+- *(deps)* update rust crate libc to v0.2.190 (#85)
+- *(deps)* update all dependencies (#79)
+- *(deps)* update rust crate tokio to v1.53.0 (#76)
+- *(deps)* update rust crate tokio to v1.52.4 (#75)
+- *(deps)* update rust crate libc to v0.2.186 (#73)
+
 ## [0.14.0] - 2026-07-07
 
 ### Added
